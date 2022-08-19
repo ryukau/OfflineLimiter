@@ -320,23 +320,21 @@ private:
   IntDelay<Sample> lookaheadDelay;
 
 public:
-  size_t latency(size_t upfold) { return attackFrames / upfold; }
-
-  void resize(size_t attackSample, size_t sustainSample)
+  // Returns latency in samples.
+  static size_t latency(Sample sampleRate, Sample attackSeconds)
   {
-    auto sizeA = attackSample + attackSample % 2;
-    auto sizeS = sustainSample + sustainSample % 2;
-
-    peakhold.resize(sizeA + sizeS);
-    smoother.resize(sizeA);
-    lookaheadDelay.resize(sizeA);
+    auto atk = size_t(sampleRate * attackSeconds);
+    atk += atk % 2;
+    return atk + 1;
   }
+
+  size_t latency(size_t upfold) { return attackFrames / upfold; }
 
   void reset()
   {
     peakhold.reset();
     smoother.reset();
-    releaseFilter.reset();
+    releaseFilter.reset(Sample(1));
     lookaheadDelay.reset();
   }
 
@@ -348,25 +346,27 @@ public:
     Sample thresholdAmplitude,
     Sample gateAmplitude)
   {
-    auto prevAttack = attackFrames;
     attackFrames = size_t(sampleRate * attackSeconds);
     attackFrames += attackFrames % 2; // DoubleAverageFilter requires multiple of 2.
 
-    auto prevSustain = sustainFrames;
     sustainFrames = size_t(sampleRate * sustainSeconds);
 
-    if (prevAttack != attackFrames || prevSustain != sustainFrames) reset();
-
-    releaseFilter.setCutoff(sampleRate, Sample(1) / releaseSeconds);
-
-    thresholdAmp = thresholdAmplitude;
-    gateAmp = gateAmplitude;
+    peakhold.resize(attackFrames + sustainFrames);
+    smoother.resize(attackFrames);
+    lookaheadDelay.resize(attackFrames);
 
     peakhold.setFrames(attackFrames + sustainFrames);
     smoother.setFrames(attackFrames);
     lookaheadDelay.setFrames(attackFrames);
+
+    releaseFilter.setCutoff(sampleRate, Sample(1) / releaseSeconds);
+    releaseFilter.reset(Sample(1));
+
+    thresholdAmp = thresholdAmplitude;
+    gateAmp = gateAmplitude;
   }
 
+private:
   inline Sample applyCharacteristicCurve(Sample peakAmp)
   {
     return peakAmp > thresholdAmp ? thresholdAmp / peakAmp : Sample(1);
@@ -378,6 +378,7 @@ public:
     return releaseFilter.process(gain);
   }
 
+public:
   Sample process(const Sample input, Sample inAbs)
   {
     auto peakAmp = peakhold.process(inAbs);

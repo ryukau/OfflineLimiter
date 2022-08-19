@@ -8,6 +8,6 @@ if (!(test-path build)) {
     -DCMAKE_BUILD_TYPE=Release
 }
 
-cmake --build build --config release
-./build/Release/offlinelimiter.exe
+cmake --build build --config debug
+./build/Debug/offlinelimiter.exe
 # python plot.py

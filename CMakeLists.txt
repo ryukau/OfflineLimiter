@@ -4,25 +4,21 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 project(offlinelimiter)
-add_executable(offlinelimiter source/offlinelimiter.cpp)
-target_compile_options(offlinelimiter PRIVATE
+add_executable(${PROJECT_NAME} offlinelimiter.cpp)
+target_compile_options(${PROJECT_NAME} PRIVATE
   /W4
   /fp:fast
-  # /arch:AVX2
-  # /GL
   # /Qvec-report:1
-  )
-# target_link_options(offlinelimiter PRIVATE
-#   /LTCG)
+)
 
+# Packages.
+find_package(Boost REQUIRED COMPONENTS program_options)
 find_package(SndFile CONFIG REQUIRED)
-target_link_libraries(offlinelimiter PRIVATE SndFile::sndfile)
-
 find_package(FFTW3 CONFIG REQUIRED)
-target_link_libraries(offlinelimiter PRIVATE FFTW3::fftw3)
 
-find_package(FFTW3f CONFIG REQUIRED)
-target_link_libraries(offlinelimiter PRIVATE FFTW3::fftw3f)
-
-find_package(FFTW3l CONFIG REQUIRED)
-target_link_libraries(offlinelimiter PRIVATE FFTW3::fftw3l)
+# Link.
+target_link_libraries(${PROJECT_NAME} PRIVATE
+  Boost::program_options
+  FFTW3::fftw3
+  SndFile::sndfile
+)
