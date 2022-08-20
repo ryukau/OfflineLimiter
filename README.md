@@ -67,13 +67,18 @@ Below is list of command line options.
   -h [ --help ]                         Show this message.
   -v [ --verbose ]                      Show processing status.
   -p [ --prompt ] arg                   Answer and skip prompt when value is
-                                        set. Value must be "yes" or "no".
-                                        Otherwise, prompt will show up.
+                                        set to "yes" or "no". Otherwise, prompt
+                                        will show up.
   -m [ --memory ] arg (=1)              Memory warning threshold in GiB. When
                                         estimated memory allocation exceeds
                                         this value, prompt will show up.
   -i [ --input ] arg                    Input audio file path.
   -o [ --output ] arg                   Output audio file path.
+  --precise                             When specified, FFT up-sampling is used
+                                        instead of FIR polyphase up-sampling.
+                                        FFT up-sampling requires large amount
+                                        of memory that is multiple of input
+                                        file size and up-sampling ratio.
   -a [ --attack ] arg (=0.0013333333333333333)
                                         Attack time in seconds.
   -s [ --sustain ] arg (=0.0013333333333333333)
@@ -98,7 +103,8 @@ offlinelimiter.exe `
   --release 0.02
 ```
 
-## True Peak Reconstruction
+## `--precise` Mode
+### True Peak Reconstruction
 True peak here means that absolute maximum of sinc interpolated signal.
 
 Sinc interpolation is defined as below.
@@ -141,7 +147,7 @@ $$
 
 The idea is that if we increase $L$ to $+\infty$, then $\tau$ becomes almost same as $t$. That's what I'm calling almost true peak. Note that this is not math proof, but conveying idea using math equation. I'm not sure if $t$ and $\tau$ becomes equal in case of $L \to +\infty$. Also the above approximation is assuming that $x(t)$ is $0$ where $t < 0$, or $t > N-1$.
 
-## Limiter Algorithm
+### Limiter Algorithm
 Limiter algorithm is the same one used in BasicLimiter.
 
 - [BasicLimiter User Manual](https://ryukau.github.io/VSTPlugins/manual/BasicLimiter/BasicLimiter_en.html)
