@@ -1,5 +1,7 @@
 # Offline Limiter
-Offline limiter (OL) is an almost true peak limiter. "Almost" here means that accuracy depends on up-sampling ratio.
+Offline limiter is an almost true peak limiter. "Almost" here means that accuracy depends on up-sampling ratio.
+
+2 different multirate technique is used. One is FIR polyphase, and other is using FFT. Default is FIR polyphase because FFT up-sampling requires large amount of memory.
 
 ## Build
 Requires C++ compiler with C++20 support.
@@ -156,6 +158,17 @@ Limiter algorithm is the same one used in BasicLimiter.
 Details are written in following link.
 
 - [リミッタの実装](https://ryukau.github.io/filter_notes/limiter/limiter.html)
+
+## FIR Polyphase
+FIR polyphase specification:
+
+- 1023 taps high elimination lowpass.
+- 1023 taps * 8 phase up-sampler.
+- 511 taps * 8 phase down-sampler.
+
+Cutoff frequency of all 3 filters is 23500 Hz at 48000 Hz sampling rate.
+
+Comments in the codes in `fir` directory contains Python3 code that is used to design filter.
 
 ## License
 GPLv2+ due to linking to FFTW3.
