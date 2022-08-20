@@ -6,6 +6,7 @@ TODO:
 - Add time spent.
 - Add second stage.
 - Maybe add better progress text.
+- Maybe add output file format option.
 
 */
 
@@ -23,6 +24,7 @@ TODO:
 #include <string>
 
 template<typename T> inline T decibelToAmp(T dB) { return std::pow(T(10), dB / T(20)); }
+template<typename T> inline T ampToDecibel(T amp) { return 20.0 * std::log10(amp); }
 
 struct FFTW3Buffer {
   double *buf = nullptr;
@@ -30,6 +32,19 @@ struct FFTW3Buffer {
 
   size_t bufSize = 0;
   size_t spcSize = 0;
+
+  double peakAmplitude(size_t length)
+  {
+    if (length > bufSize) {
+      std::cerr << "Warning: FFTW3Buffer::peakAmplitude() received length longer than "
+                   "buffer size.\n";
+      length = bufSize;
+    }
+
+    double peak = 0.0f;
+    for (size_t i = 0; i < length; ++i) peak = std::max(peak, std::abs(buf[i]));
+    return peak;
+  }
 
   void allocate(size_t size)
   {
@@ -216,6 +231,26 @@ template<typename T> bool isValidSecond(T value)
     && value <= nl::max();
 }
 
+void printPeakAmplitude(std::vector<FFTW3Buffer> &data, size_t length)
+{
+  size_t maxPeakChannel = 0;
+  double maxPeak = 0.0;
+
+  for (size_t ch = 0; ch < data.size(); ++ch) {
+    auto peak = data[ch].peakAmplitude(length);
+
+    std::cout << std::format("Ch.{:02d} : {} [dB], {}\n", ch, ampToDecibel(peak), peak);
+
+    if (peak > maxPeak) {
+      maxPeak = peak;
+      maxPeakChannel = ch;
+    }
+  }
+  std::cout << std::format(
+    "Max peak at ch.{}, {} [dB], or {} in amplitude.\n\n", maxPeakChannel,
+    ampToDecibel(maxPeak), maxPeak);
+}
+
 int main(int argc, char *argv[])
 {
   namespace po = boost::program_options;
@@ -228,7 +263,7 @@ int main(int argc, char *argv[])
      "Show processing status.")                                                    //
     ("prompt,p",                                                                   //
      po::value<std::string>(),                                                     //
-     "Answer and skip prompt when value is set. Value must be \"yes\" or \"no\". " //
+     "Answer and skip prompt when value is set to \"yes\" or \"no\". "             //
      "Otherwise, prompt will show up.")                                            //
     ("memory,m",                                                                   //
      po::value<double>()->default_value(1.0),                                      //
@@ -424,9 +459,17 @@ Required Memory Estimation : {:.3f} [GB]
 
   snd.load(data);
   snd.close();
+  if (isVerbose) {
+    std::cout << "\nInput Peaks\n";
+    printPeakAmplitude(data, static_cast<size_t>(snd.info.frames));
+  }
 
   if (isVerbose) std::cout << "Up-sampling\n";
   for (auto &dt : data) dt.upSample(param.fold, snd.info.frames);
+  if (isVerbose) {
+    std::cout << "\nAlmost True Peaks\n";
+    printPeakAmplitude(data, static_cast<size_t>(param.fold * snd.info.frames));
+  }
 
   // Apply limiter.
   std::vector<Limiter<double>> limiters(data.size());
@@ -458,6 +501,10 @@ Required Memory Estimation : {:.3f} [GB]
   // Down-sampling.
   if (isVerbose) std::cout << "Down-sampling\n";
   for (auto &dt : data) dt.downSample(param.fold, snd.info.frames, latency);
+  if (isVerbose) {
+    std::cout << "\nOutput Peaks\n";
+    printPeakAmplitude(data, static_cast<size_t>(snd.info.frames));
+  }
 
   // Write to file.
   return writeWave(outputPath.string(), data, snd.info);
