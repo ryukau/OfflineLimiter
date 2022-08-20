@@ -1,10 +1,11 @@
 /*
 
 TODO:
-- Add time spent.
-- Add second stage.
+- Add test and option to trim silance caused by latency.
+- Change to use FFT convolution on memory efficient path.
 - Maybe add better progress text.
 - Maybe add output file format option.
+- Maybe Add second stage.
 
 */
 
@@ -18,6 +19,7 @@ TODO:
 #include <fftw3.h>
 #include <sndfile.h>
 
+#include <chrono>
 #include <complex>
 #include <cstdlib>
 #include <filesystem>
@@ -202,14 +204,13 @@ int writeWave(std::string path, std::vector<FFTW3Buffer> &data, const SF_INFO &i
 int writeWave(
   std::string path,
   std::vector<double> &data,
-  const size_t latency,
+  const sf_count_t frames,
+  const sf_count_t offset,
   const SF_INFO &inputInfo)
 {
   SF_INFO info = inputInfo;
+  info.frames = frames;
   info.format = (SF_FORMAT_WAV | SF_FORMAT_FLOAT);
-
-  auto items = info.channels * info.frames;
-  size_t offset = static_cast<size_t>(info.channels) * latency;
 
   SNDFILE *file = sf_open(path.c_str(), SFM_WRITE, &info);
   if (!file) {
@@ -217,6 +218,9 @@ int writeWave(
     return EXIT_FAILURE;
   }
 
+  // Beware that values in `info` becomes invalid after sf_open.
+
+  auto items = inputInfo.channels * frames;
   if (sf_write_double(file, &data[offset], items) != sf_count_t(items)) {
     std::cerr << "Error: " << sf_strerror(file) << std::endl;
   }
@@ -413,7 +417,9 @@ int processMemoryEfficientMode(
     printPeakAmplitude(data, channels, frames);
   }
 
-  return writeWave(opt.outputPath.string(), data, latency, snd.info);
+  sf_count_t offset = 0; // info.channels * latency; // TODO
+  return writeWave(
+    opt.outputPath.string(), data, snd.info.frames + latency, offset, snd.info);
 }
 
 int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double> &param)
@@ -664,8 +670,13 @@ Frame       : {}
       snd.info.samplerate, snd.info.channels, snd.info.frames);
   }
 
-  if (vm.count("precise")) {
-    return processPreciseMode(opt, snd, param);
+  auto start = std::chrono::steady_clock::now();
+  auto exitCode = vm.count("precise") ? processPreciseMode(opt, snd, param)
+                                      : processMemoryEfficientMode(opt, snd, param);
+  auto end = std::chrono::steady_clock::now();
+  std::chrono::duration<double> elapsed = end - start;
+  if (opt.isVerbose) {
+    std::cout << std::format("Elapsed Time : {} [s]\n", elapsed.count());
   }
-  return processMemoryEfficientMode(opt, snd, param);
+  return exitCode;
 }
