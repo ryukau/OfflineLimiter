@@ -3,6 +3,8 @@ Offline limiter is an almost true peak limiter. "Almost" here means that accurac
 
 2 different multirate technique is used. One is FIR polyphase, and other is using FFT. Default is FIR polyphase because FFT up-sampling requires large amount of memory.
 
+It's too heavy. [I think we're going to have to take this... *offline*.](https://youtu.be/1RAMRukKqQg?t=25)
+
 ## Build
 Requires C++ compiler with C++20 support.
 
@@ -105,8 +107,17 @@ offlinelimiter.exe `
   --release 0.02
 ```
 
-## `--precise` Mode
-### True Peak Reconstruction
+## Limiter Algorithm
+Limiter algorithm is the same one used in BasicLimiter.
+
+- [BasicLimiter User Manual](https://ryukau.github.io/VSTPlugins/manual/BasicLimiter/BasicLimiter_en.html)
+- [Source Code](https://github.com/ryukau/VSTPlugins/blob/master/BasicLimiter/source/dsp/limiter.hpp)
+
+Details are written in following link.
+
+- [リミッタの実装](https://ryukau.github.io/filter_notes/limiter/limiter.html)
+
+## True Peak Reconstruction in `--precise` Mode
 True peak here means that absolute maximum of sinc interpolated signal.
 
 Sinc interpolation is defined as below.
@@ -129,7 +140,7 @@ $$
 \mathtt{truepeak} = \max(|x(t)|), \enspace \text{for all} \enspace t \enspace \text{in} \enspace \mathbb{R}.
 $$
 
-As you can see, sinc interpolation requires infinite length convolution. It can't be computed in real-time or in real-life. However, we can approximate true peak by using up-sampling with discrete fourier transform (DFT). I found this from experiment, but I guess there are some book explains the theory behind it. The idea is that ideal lowpass equation matches to DFT equation. Also the use of DFT is the reason this limiter runs offline, not in real-time. It has to know all the input beforehand.
+As you can see, sinc interpolation requires infinite length convolution. It can't be computed in real-time or in real-life. However, we can approximate true peak by using up-sampling with discrete fourier transform (DFT). I found this from experiment, but I guess there are some books that explain the theory behind it. The idea is that ideal lowpass equation matches to DFT equation. Also the use of DFT is the reason this limiter runs offline, not in real-time. It has to know all the input beforehand.
 
 The accuracy of true peak reconstruction depends on how fine grained the up-sampling is. I'm not good at math, but it might be written as following.
 
@@ -147,28 +158,20 @@ $$
 - $N$ is number of input samples.
 - $L$ is up-sampling ratio.
 
-The idea is that if we increase $L$ to $+\infty$, then $\tau$ becomes almost same as $t$. That's what I'm calling almost true peak. Note that this is not math proof, but conveying idea using math equation. I'm not sure if $t$ and $\tau$ becomes equal in case of $L \to +\infty$. Also the above approximation is assuming that $x(t)$ is $0$ where $t < 0$, or $t > N-1$.
+The idea is that if we increase $L$ to $+\infty$, then $\tau$ becomes almost same as $t$. That's what I'm calling almost true peak. Note that this is not math proof, but conveying idea using math equation. I'm not sure if $t$ and $\tau$ become equal in case of $L \to +\infty$. Also the above approximation is assuming that $x(t)$ is $0$ where $t < 0$, or $t > N-1$.
 
-### Limiter Algorithm
-Limiter algorithm is the same one used in BasicLimiter.
+## FIR Polyphase Spec.
+FIR polyphase is used when `--precise` option is not set. This is default because of the better memory efficiency.
 
-- [BasicLimiter User Manual](https://ryukau.github.io/VSTPlugins/manual/BasicLimiter/BasicLimiter_en.html)
-- [Source Code](https://github.com/ryukau/VSTPlugins/blob/master/BasicLimiter/source/dsp/limiter.hpp)
-
-Details are written in following link.
-
-- [リミッタの実装](https://ryukau.github.io/filter_notes/limiter/limiter.html)
-
-## FIR Polyphase
-FIR polyphase specification:
+Specification:
 
 - 1023 taps high elimination lowpass.
 - 1023 taps * 8 phase up-sampler.
 - 511 taps * 8 phase down-sampler.
 
-Cutoff frequency of all 3 filters is 23500 Hz at 48000 Hz sampling rate.
+Cutoff frequency is 23500 Hz at 48000 Hz sampling rate for all 3 filters above. Or 0.489 in normalized frequency (radian/π).
 
-Comments in the codes in `fir` directory contains Python3 code that is used to design filter.
+Comments in the codes in `fir` directory provides Python3 code used to design filter.
 
 ## License
-GPLv2+ due to linking to FFTW3.
+GPLv2+

@@ -17,7 +17,7 @@
 /*
 
 TODO:
-- Add test and option to trim silance caused by latency.
+- Add test and option to trim silence caused by latency.
 - Change to use FFT convolution on memory efficient path.
 - Maybe add better progress text.
 - Maybe add output file format option.
