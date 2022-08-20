@@ -136,11 +136,11 @@ The accuracy of true peak reconstruction depends on how fine grained the up-samp
 $$
 \mathtt{truepeak} \approx \max(|x(\tau)|)
 , \enspace \forall
-\tau \in \{
+\tau \in \lbrace
   a + b \mid
-\forall a \in \{0, 1, \dots, N-1\},\enspace
-\forall b \in \{ \frac{0}{L}, \frac{1}{L}, \dots, \frac{L-1}{L} \}
-\}.
+\forall a \in \lbrace 0, 1, \dots, N-1 \rbrace , \enspace
+\forall b \in \lbrace \frac{0}{L}, \frac{1}{L}, \dots, \frac{L-1}{L} \rbrace
+\rbrace.
 $$
 
 - $\tau$ is up-sampled discrete time in samples.
