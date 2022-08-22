@@ -391,7 +391,13 @@ int processMemoryEfficientMode(
     + HeCoef::delay + UpCoef::intDelay + DownCoef::intDelay;
   data.resize(data.size() + channels * latency);
 
-  std::vector<NaiveConvolver<double, HeCoef>> highEliminators(channels);
+  std::vector<OverlapSaveConvolver> highEliminators(channels);
+  for (auto &he : highEliminators) {
+    he.init(HeCoef::fir.size(), HeCoef::delay);
+    he.setFir(&HeCoef::fir[0], 0, HeCoef::fir.size());
+    he.reset();
+  }
+
   std::vector<FirUpSampler<double, UpCoef>> upSampler(channels);
   std::vector<FirDownSampler<double, DownCoef>> downSampler(channels);
 

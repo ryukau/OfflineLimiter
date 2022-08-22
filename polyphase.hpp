@@ -92,9 +92,9 @@ public:
     fftw_free(coefficient);
   }
 
-  void setFir(std::vector<double> &source, size_t start, size_t end)
+  void setFir(const double *source, size_t start, size_t end)
   {
-    std::copy(source.begin() + start, source.begin() + end, coefficient);
+    std::copy(source + start, source + end, coefficient);
 
     // FFT scaling.
     for (size_t idx = 0; idx < half; ++idx) coefficient[idx] /= double(bufSize);
@@ -139,63 +139,57 @@ public:
   }
 };
 
-template<typename Sample, typename Fir> class NaiveConvolver {
-private:
-  std::array<Sample, Fir::fir.size()> buf{};
-
-public:
-  void reset() { buf.fill(Sample(0)); }
-
-  Sample process(Sample input)
-  {
-    std::rotate(buf.rbegin(), buf.rbegin() + 1, buf.rend());
-    buf[0] = input;
-
-    Sample output = 0;
-    for (size_t n = 0; n < Fir::fir.size(); ++n) output += buf[n] * Fir::fir[n];
-    return output;
-  }
-};
-
 template<typename Sample, typename Fir> class FirUpSampler {
-  std::array<Sample, Fir::bufferSize> buf{};
+  std::array<OverlapSaveConvolver, Fir::upfold> convolvers{};
 
 public:
   std::array<Sample, Fir::upfold> output;
 
-  void reset() { buf.fill(Sample(0)); }
+  FirUpSampler()
+  {
+    for (size_t idx = 0; idx < Fir::upfold; ++idx) {
+      convolvers[idx].init(Fir::bufferSize, Fir::intDelay);
+      convolvers[idx].setFir(&(Fir::coefficient[idx][0]), 0, Fir::bufferSize);
+      convolvers[idx].reset();
+    }
+  }
+
+  void reset()
+  {
+    for (auto &cv : convolvers) cv.reset();
+  }
 
   void process(Sample input)
   {
-    std::rotate(buf.rbegin(), buf.rbegin() + 1, buf.rend());
-    buf[0] = input;
-
-    std::fill(output.begin(), output.end(), Sample(0));
-    for (size_t i = 0; i < Fir::coefficient.size(); ++i) {
-      auto &&phase = Fir::coefficient[i];
-      for (size_t n = 0; n < phase.size(); ++n) output[i] += buf[n] * phase[n];
+    for (size_t idx = 0; idx < Fir::upfold; ++idx) {
+      output[idx] = convolvers[idx].process(input);
     }
   }
 };
 
 template<typename Sample, typename Fir> class FirDownSampler {
-  std::array<std::array<Sample, Fir::bufferSize>, Fir::upfold> buf{{}};
+  std::array<OverlapSaveConvolver, Fir::upfold> convolvers{};
 
 public:
-  void reset() { buf.fill({}); }
-
-  Sample process(const std::array<Sample, Fir::upfold> &input)
+  FirDownSampler()
   {
-    for (size_t i = 0; i < Fir::upfold; ++i) {
-      std::rotate(buf[i].rbegin(), buf[i].rbegin() + 1, buf[i].rend());
-      buf[i][0] = input[i];
+    for (size_t idx = 0; idx < Fir::upfold; ++idx) {
+      convolvers[idx].init(Fir::bufferSize, Fir::intDelay);
+      convolvers[idx].setFir(&(Fir::coefficient[idx][0]), 0, Fir::bufferSize);
+      convolvers[idx].reset();
     }
+  }
 
-    Sample output = 0;
-    for (size_t i = 0; i < Fir::coefficient.size(); ++i) {
-      auto &&phase = Fir::coefficient[i];
-      for (size_t n = 0; n < phase.size(); ++n) output += buf[i][n] * phase[n];
+  void reset()
+  {
+    for (auto &cv : convolvers) cv.reset();
+  }
+
+  Sample process(std::array<Sample, Fir::upfold> &input)
+  {
+    for (size_t idx = 0; idx < Fir::upfold; ++idx) {
+      input[idx] = convolvers[idx].process(input[idx]);
     }
-    return output;
+    return std::accumulate(input.begin(), input.end(), Sample(0));
   }
 };
