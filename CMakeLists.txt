@@ -4,7 +4,14 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 project(offlinelimiter)
-add_executable(${PROJECT_NAME} offlinelimiter.cpp)
+add_executable(${PROJECT_NAME}
+  offlinelimiter.cpp
+  polyphase.hpp
+  limiter.hpp
+  fir/downsamplercoefficient.hpp
+  fir/higheliminatorcoefficient.hpp
+  fir/upsamplercoefficient.hpp
+)
 target_compile_options(${PROJECT_NAME} PRIVATE
   /W4
   /fp:fast
