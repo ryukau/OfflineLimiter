@@ -337,7 +337,7 @@ void printPeakAmplitude(
 int promptMemoryUsage(double estimatedMemoryUsage, UserOption &opt)
 {
   std::cout << std::format(
-    "\nRequired Memory Estimation : {:.3f} [GB]\n", estimatedMemoryUsage);
+    "\nRequired Memory Estimation : {:.3f} [GiB]\n", estimatedMemoryUsage);
 
   if (estimatedMemoryUsage >= opt.memoryWarningThreshold) {
     std::cerr << std::format(
