@@ -13,7 +13,7 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v3
       with:
-        path: OfflineLimiter
+        path: .
         submodules: recursive
     - name: Run script
-      run: OfflineLimiter/build.ps1
+      run: ./build.ps1
