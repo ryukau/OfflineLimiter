@@ -61,6 +61,8 @@ cmake --build build --config release
 ```
 
 ## Usage
+Output format is fixed to 32-bit float WAV.
+
 Detail of limiter parameter is written in BasicLimiter manual linked below. The limiter algorithm is the same. Only multirate processing part is changed.
 
 - [BasicLimiter User Manual](https://ryukau.github.io/VSTPlugins/manual/BasicLimiter/BasicLimiter_en.html)
@@ -179,6 +181,8 @@ Specification:
 - 511 taps * 8 phase down-sampler.
 
 Cutoff frequency is 23500 Hz at 48000 Hz sampling rate for all 3 filters above. Or 0.489 in normalized frequency (radian/π).
+
+When `--trim` option is not specified, `2560 + attack * samplerate` frames are added to the front, and `1286` frames are added to the back of input signal. See usage section for more details.
 
 Comments in the codes in `fir` directory provides Python3 code used to design filter.
 
