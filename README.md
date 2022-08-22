@@ -83,6 +83,15 @@ Below is list of command line options.
                                         FFT up-sampling requires large amount
                                         of memory that is multiple of input
                                         file size and up-sampling ratio.
+  --trim                                --trim has no effect when --precise is
+                                        set. When specified, input frame count
+                                        and output frame count become the same,
+                                        by trimming artifacts introduced by
+                                        multirate processing. When not
+                                        specified, output signal becomes longer
+                                        than input signal. Additional frame
+                                        count is (2560 + attack * samplerate)
+                                        at front, and 1286 at back.
   -a [ --attack ] arg (=0.0013333333333333333)
                                         Attack time in seconds.
   -s [ --sustain ] arg (=0.0013333333333333333)

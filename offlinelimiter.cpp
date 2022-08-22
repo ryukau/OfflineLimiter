@@ -261,9 +261,11 @@ template<typename T> struct LimiterParameter {
 
 struct UserOption {
   std::filesystem::path outputPath;
-  bool isVerbose = false;
+  bool verbose = false;
   bool skipPrompt = false;
   bool isYes = false;
+  bool precise = false;
+  bool trim = false;
   double memoryWarningThreshold = 1.0;
 };
 
@@ -343,7 +345,7 @@ int promptMemoryUsage(double estimatedMemoryUsage, UserOption &opt)
 
     if (opt.skipPrompt) {
       if (!opt.isYes) {
-        if (opt.isVerbose) {
+        if (opt.verbose) {
           std::cout << "Info: Processing is terminated by --prompt no.\n";
         }
         return EXIT_FAILURE;
@@ -361,7 +363,7 @@ int promptMemoryUsage(double estimatedMemoryUsage, UserOption &opt)
 int processMemoryEfficientMode(
   UserOption &opt, SoundFile &snd, LimiterParameter<double> &param)
 {
-  if (opt.isVerbose) {
+  if (opt.verbose) {
     auto inputSize
       = sizeof(double) * snd.info.channels * snd.info.frames / double(1024 * 1024 * 1024);
 
@@ -376,7 +378,7 @@ int processMemoryEfficientMode(
   const size_t channels = static_cast<size_t>(snd.info.channels);
   const size_t frames = static_cast<size_t>(snd.info.frames);
 
-  if (opt.isVerbose) {
+  if (opt.verbose) {
     std::cout << "\nInput Peaks\n";
     printPeakAmplitude(data, channels, frames);
   }
@@ -386,10 +388,12 @@ int processMemoryEfficientMode(
   using UpCoef = UpSamplerCoefficient<double>;
   using DownCoef = DownSamplerCoefficient<double>;
 
-  const double upRate = static_cast<double>(UpCoef::upfold * snd.info.samplerate);
-  const auto latency = Limiter<double>::latency(upRate, param.attackSeconds)
-    + HeCoef::delay + UpCoef::intDelay + DownCoef::intDelay;
-  data.resize(data.size() + channels * latency);
+  const auto limiterLatency
+    = Limiter<double>::latency(snd.info.samplerate, param.attackSeconds);
+  const auto margin = limiterLatency
+    + 2 * (HeCoef::fir.size() + UpCoef::bufferSize + DownCoef::bufferSize);
+
+  data.resize(data.size() + channels * margin);
 
   std::vector<OverlapSaveConvolver> highEliminators(channels);
   for (auto &he : highEliminators) {
@@ -402,15 +406,16 @@ int processMemoryEfficientMode(
   std::vector<FirDownSampler<double, DownCoef>> downSampler(channels);
 
   std::vector<Limiter<double>> limiters(channels);
+  const double upRate = static_cast<double>(UpCoef::upfold * snd.info.samplerate);
   for (auto &lm : limiters) {
     lm.prepare(
       upRate, param.attackSeconds, param.sustainSeconds, param.releaseSeconds,
       decibelToAmp(param.thresholdDecibel), decibelToAmp(param.gateDecibel));
   }
 
-  if (opt.isVerbose) std::cout << "Applying limiter\n";
+  if (opt.verbose) std::cout << "Applying limiter\n";
 
-  for (size_t frm = 0; frm < frames; ++frm) {
+  for (size_t frm = 0; frm < frames + margin; ++frm) {
     size_t index = channels * frm;
 
     for (size_t ch = 0; ch < channels; ++ch) {
@@ -434,19 +439,27 @@ int processMemoryEfficientMode(
     }
   }
 
-  if (opt.isVerbose) {
+  if (opt.verbose) {
     std::cout << "\nOutput Peaks\n";
     printPeakAmplitude(data, channels, frames);
   }
 
-  sf_count_t offset = 0; // info.channels * latency; // TODO
+  // Even when `--trim` is not specified, silence introduced by FIR group delay is
+  // trimmed. See the above comment on latency about -3.
+  sf_count_t overlapAddLatency
+    = HeCoef::fir.size() + UpCoef::bufferSize + DownCoef::bufferSize;
+  sf_count_t firLatency = HeCoef::delay + UpCoef::intDelay + DownCoef::intDelay - 3;
+  sf_count_t totalLatency = limiterLatency + overlapAddLatency + firLatency;
+  sf_count_t offset = opt.trim ? totalLatency : firLatency;
+  sf_count_t trimedFrames = opt.trim ? frames : frames + margin - firLatency;
+  std::cout << trimedFrames << std::endl;
   return writeWave(
-    opt.outputPath.string(), data, snd.info.frames + latency, offset, snd.info);
+    opt.outputPath.string(), data, trimedFrames, snd.info.channels * offset, snd.info);
 }
 
 int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double> &param)
 {
-  if (opt.isVerbose) {
+  if (opt.verbose) {
     auto inputSize
       = sizeof(double) * snd.info.channels * snd.info.frames / double(1024 * 1024 * 1024);
     auto estimatedMemoryUsage = 2 * param.fold * inputSize;
@@ -465,14 +478,14 @@ int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double>
 
   snd.load(data);
   snd.close();
-  if (opt.isVerbose) {
+  if (opt.verbose) {
     std::cout << "\nInput Peaks\n";
     printPeakAmplitude(data, static_cast<size_t>(snd.info.frames));
   }
 
-  if (opt.isVerbose) std::cout << "Up-sampling\n";
+  if (opt.verbose) std::cout << "Up-sampling\n";
   for (auto &dt : data) dt.upSample(param.fold, snd.info.frames);
-  if (opt.isVerbose) {
+  if (opt.verbose) {
     std::cout << "\nAlmost True Peaks\n";
     printPeakAmplitude(data, static_cast<size_t>(param.fold * snd.info.frames));
   }
@@ -486,7 +499,7 @@ int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double>
       decibelToAmp(param.gateDecibel));
   }
 
-  if (opt.isVerbose) std::cout << "Applying limiter\n";
+  if (opt.verbose) std::cout << "Applying limiter\n";
 
   for (size_t idx = 0; idx < bufferSize; ++idx) {
     // Stereo (or multi-channel) link.
@@ -503,9 +516,9 @@ int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double>
   }
 
   // Down-sampling.
-  if (opt.isVerbose) std::cout << "Down-sampling\n";
+  if (opt.verbose) std::cout << "Down-sampling\n";
   for (auto &dt : data) dt.downSample(param.fold, snd.info.frames, latency);
-  if (opt.isVerbose) {
+  if (opt.verbose) {
     std::cout << "\nOutput Peaks\n";
     printPeakAmplitude(data, static_cast<size_t>(snd.info.frames));
   }
@@ -542,6 +555,12 @@ int main(int argc, char *argv[])
      "When specified, FFT up-sampling is used instead of FIR polyphase up-sampling. "  //
      "FFT up-sampling requires large amount of memory that is multiple of input file " //
      "size and up-sampling ratio.")                                                    //
+    ("trim",                                                                           //
+     "--trim has no effect when --precise is set. When specified, input frame count "  //
+     "and output frame count become the same, by trimming artifacts introduced by "    //
+     "multirate processing. When not specified, output signal becomes longer than "    //
+     "input signal. Additional frame count is (2560 + attack * samplerate) at front, " //
+     "and 1286 at back.")                                                              //
     ("attack,a",                                                                       //
      po::value<double>()->default_value(64.0 / 48000.0),                               //
      "Attack time in seconds.")                                                        //
@@ -572,7 +591,7 @@ int main(int argc, char *argv[])
 
   // Load arguments not directly related to limiter.
   UserOption opt;
-  opt.isVerbose = vm.count("verbose");
+  opt.verbose = vm.count("verbose");
 
   if (vm.count("prompt")) {
     auto answer = vm["prompt"].as<std::string>();
@@ -607,8 +626,7 @@ int main(int argc, char *argv[])
 
     if (opt.skipPrompt) {
       if (!opt.isYes) {
-        if (opt.isVerbose)
-          std::cout << "Info: Processing is terminated by --prompt no.\n";
+        if (opt.verbose) std::cout << "Info: Processing is terminated by --prompt no.\n";
         return EXIT_FAILURE;
       }
     } else {
@@ -617,6 +635,12 @@ int main(int argc, char *argv[])
       std::cin >> yes;
       if (yes != 'y' && yes != 'Y') return EXIT_SUCCESS;
     }
+  }
+
+  opt.precise = vm.count("precise");
+  opt.trim = vm.count("trim");
+  if (opt.precise && opt.trim) {
+    std::cerr << "Warning: --trim has no effect when --precise is set.\n";
   }
 
   // Load arguments related to limiter.
@@ -658,11 +682,14 @@ int main(int argc, char *argv[])
     std::cerr << "Error: Up-sampling ratio must be greater than 0.\n";
     isInvalid = true;
   }
-  if (isInvalid || opt.isVerbose) {
+  if (isInvalid || opt.verbose) {
     std::cout << std::format(
       R"(
 Input path  : {}
 Output path : {}
+
+Mode        : {}
+Trim        : {}
 
 Attack      : {} [s]
 Sustain     : {} [s]
@@ -672,9 +699,10 @@ Gate        : {} [dB]
 Link        : {}
 Up-sampling : {}
 )",
-      inputPath, opt.outputPath.string(), param.attackSeconds, param.sustainSeconds,
-      param.releaseSeconds, param.thresholdDecibel, param.gateDecibel, param.link,
-      param.fold);
+      inputPath, opt.outputPath.string(),
+      opt.precise ? "FFT (precise)" : "FIR Polyphase (non-precise)", opt.trim,
+      param.attackSeconds, param.sustainSeconds, param.releaseSeconds,
+      param.thresholdDecibel, param.gateDecibel, param.link, param.fold);
   }
   if (isInvalid) return EXIT_FAILURE;
 
@@ -682,7 +710,7 @@ Up-sampling : {}
   SoundFile snd;
   if (snd.open(inputPath) == EXIT_FAILURE) return EXIT_FAILURE;
 
-  if (opt.isVerbose) {
+  if (opt.verbose) {
     std::cout << std::format(
       R"(
 Sample Rate : {} [Hz]
@@ -693,11 +721,11 @@ Frame       : {}
   }
 
   auto start = std::chrono::steady_clock::now();
-  auto exitCode = vm.count("precise") ? processPreciseMode(opt, snd, param)
-                                      : processMemoryEfficientMode(opt, snd, param);
+  auto exitCode = opt.precise ? processPreciseMode(opt, snd, param)
+                              : processMemoryEfficientMode(opt, snd, param);
   auto end = std::chrono::steady_clock::now();
   std::chrono::duration<double> elapsed = end - start;
-  if (opt.isVerbose) {
+  if (opt.verbose) {
     std::cout << std::format("Elapsed Time : {} [s]\n", elapsed.count());
   }
   return exitCode;
