@@ -452,7 +452,6 @@ int processMemoryEfficientMode(
   sf_count_t totalLatency = limiterLatency + overlapAddLatency + firLatency;
   sf_count_t offset = opt.trim ? totalLatency : firLatency;
   sf_count_t trimedFrames = opt.trim ? frames : frames + margin - firLatency;
-  std::cout << trimedFrames << std::endl;
   return writeWave(
     opt.outputPath.string(), data, trimedFrames, snd.info.channels * offset, snd.info);
 }
