@@ -22,6 +22,7 @@ Run `testsignal.py` to generate `impulse.wav`.
 python testsignal.py
 ```
 
+### Impulse Response Test
 Apply offline limiter to `impulse.wav`.
 
 ```
@@ -29,3 +30,8 @@ Apply offline limiter to `impulse.wav`.
 ```
 
 Check `limiterd_impulse.wav` with some audio editor. If you don't have one, Audacity may be used.
+
+### Limiting Test
+`testsignal.py` also tests if true-peak limiting is done correctly or not. See `testPolyPhaseLimiting()` and `testPreciseLimiting` for details.
+
+`*binomial_nosie.wav` are generated for test. The one without prefix is the source. Others are output of offline limiter.
