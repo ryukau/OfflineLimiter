@@ -5,6 +5,16 @@ Offline limiter is an almost true peak limiter. "Almost" here means that accurac
 
 It's too heavy. [I think we're going to have to take this... *offline*.](https://youtu.be/1RAMRukKqQg?t=25)
 
+## Known Bug
+When input signal contains sudden amplitude change, limiting might may as output exceeds 0 dB. Confirmed on following situation.
+
+- +5 dB with similar to bass drum sound.
+- +60 dB amplitude blow up.
+
+Mitigation is to apply limiter again.
+
+Possible reason is that the amplitude modulation (AM). Offline limiter uses extracted amplitude envelope to apply AM in order to limit the amplitude. AM produces side-band frequency components. Then down-sampling interacts with that components and it results in undesirable peak. Therefore, another possible mitigation is to increase the attack time, but I personally don't recommend it.
+
 ## Build
 Requires C++ compiler with C++20 support.
 
