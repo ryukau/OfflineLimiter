@@ -6,7 +6,7 @@ Offline limiter is an almost true peak limiter. "Almost" here means that accurac
 It's too heavy. [I think we're going to have to take this... *offline*.](https://youtu.be/1RAMRukKqQg?t=25)
 
 ## Known Bug
-When input signal contains sudden amplitude change, limiting might may as output exceeds 0 dB. Confirmed on following situation.
+When input signal contains sudden amplitude change, limiting may fail as output exceeds 0 dB. Confirmed on following situation.
 
 - +5 dB with similar to bass drum sound.
 - +60 dB amplitude blow up.
