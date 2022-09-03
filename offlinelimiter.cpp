@@ -256,7 +256,7 @@ template<typename T> struct LimiterParameter {
   T thresholdDecibel = T(-0.1);
   T gateDecibel = -std::numeric_limits<T>::infinity();
   T link = T(0.5);
-  size_t fold = 16;
+  size_t upsample = 1;
 };
 
 struct UserOption {
@@ -264,7 +264,6 @@ struct UserOption {
   bool verbose = false;
   bool skipPrompt = false;
   bool isYes = false;
-  bool precise = false;
   bool trim = false;
   double memoryWarningThreshold = 1.0;
 };
@@ -461,15 +460,15 @@ int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double>
   if (opt.verbose) {
     auto inputSize
       = sizeof(double) * snd.info.channels * snd.info.frames / double(1024 * 1024 * 1024);
-    auto estimatedMemoryUsage = 2 * param.fold * inputSize;
+    auto estimatedMemoryUsage = 2 * param.upsample * inputSize;
 
     if (promptMemoryUsage(estimatedMemoryUsage, opt) == EXIT_FAILURE) return EXIT_FAILURE;
   }
 
   // Up-sampling.
   const auto latency = Limiter<double>::latency(
-    static_cast<double>(param.fold * snd.info.samplerate), param.attackSeconds);
-  const auto bufferSize = param.fold * snd.info.frames + latency;
+    static_cast<double>(param.upsample * snd.info.samplerate), param.attackSeconds);
+  const auto bufferSize = param.upsample * snd.info.frames + latency;
   std::vector<FFTW3Buffer> data;
   data.resize(snd.info.channels);
 
@@ -483,17 +482,17 @@ int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double>
   }
 
   if (opt.verbose) std::cout << "Up-sampling\n";
-  for (auto &dt : data) dt.upSample(param.fold, snd.info.frames);
+  for (auto &dt : data) dt.upSample(param.upsample, snd.info.frames);
   if (opt.verbose) {
     std::cout << "\nAlmost True Peaks\n";
-    printPeakAmplitude(data, static_cast<size_t>(param.fold * snd.info.frames));
+    printPeakAmplitude(data, static_cast<size_t>(param.upsample * snd.info.frames));
   }
 
   // Apply limiter.
   std::vector<Limiter<double>> limiters(data.size());
   for (auto &lm : limiters) {
     lm.prepare(
-      static_cast<double>(param.fold * snd.info.samplerate), param.attackSeconds,
+      static_cast<double>(param.upsample * snd.info.samplerate), param.attackSeconds,
       param.sustainSeconds, param.releaseSeconds, decibelToAmp(param.thresholdDecibel),
       decibelToAmp(param.gateDecibel));
   }
@@ -516,7 +515,7 @@ int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double>
 
   // Down-sampling.
   if (opt.verbose) std::cout << "Down-sampling\n";
-  for (auto &dt : data) dt.downSample(param.fold, snd.info.frames, latency);
+  for (auto &dt : data) dt.downSample(param.upsample, snd.info.frames, latency);
   if (opt.verbose) {
     std::cout << "\nOutput Peaks\n";
     printPeakAmplitude(data, static_cast<size_t>(snd.info.frames));
@@ -531,57 +530,56 @@ int main(int argc, char *argv[])
   namespace po = boost::program_options;
 
   po::options_description desc("Allowed options");
-  desc.add_options()                                                                   //
-    ("help,h",                                                                         //
-     "Show this message.")                                                             //
-    ("verbose,v",                                                                      //
-     "Show processing status.")                                                        //
-    ("prompt,p",                                                                       //
-     po::value<std::string>(),                                                         //
-     "Answer and skip prompt when value is set to \"yes\" or \"no\". "                 //
-     "Otherwise, prompt will show up.")                                                //
-    ("memory,m",                                                                       //
-     po::value<double>()->default_value(1.0),                                          //
-     "Memory warning threshold in GiB. When estimated memory allocation exceeds "      //
-     "this value, prompt will show up.")                                               //
-    ("input,i",                                                                        //
-     po::value<std::string>(),                                                         //
-     "Input audio file path.")                                                         //
-    ("output,o",                                                                       //
-     po::value<std::string>(),                                                         //
-     "Output audio file path.")                                                        //
-    ("precise",                                                                        //
-     "When specified, FFT up-sampling is used instead of FIR polyphase up-sampling. "  //
-     "FFT up-sampling requires large amount of memory that is multiple of input file " //
-     "size and up-sampling ratio.")                                                    //
-    ("trim",                                                                           //
-     "--trim has no effect when --precise is set. When specified, input frame count "  //
-     "and output frame count become the same, by trimming artifacts introduced by "    //
-     "multirate processing. When not specified, output signal becomes longer than "    //
-     "input signal. Additional frame count is (2560 + attack * samplerate) at front, " //
-     "and 1286 at back.")                                                              //
-    ("attack,a",                                                                       //
-     po::value<double>()->default_value(64.0 / 48000.0),                               //
-     "Attack time in seconds.")                                                        //
-    ("sustain,s",                                                                      //
-     po::value<double>()->default_value(64.0 / 48000.0),                               //
-     "Sustain time in seconds.")                                                       //
-    ("release,r",                                                                      //
-     po::value<double>()->default_value(0.0),                                          //
-     "Release time in seconds.")                                                       //
-    ("threshold,t",                                                                    //
-     po::value<double>()->default_value(-0.1),                                         //
-     "Limiter threshold in decibel.")                                                  //
-    ("gate,g",                                                                         //
-     po::value<double>()->default_value(-std::numeric_limits<double>::infinity()),     //
-     "Gate threshold in decibel.")                                                     //
-    ("link,l",                                                                         //
-     po::value<double>()->default_value(0.5),                                          //
-     "Stereo or multi-channel link amount in [0.0, 1.0]. 0.0 is no link, and "         //
-     "1.0 is full link.")                                                              //
-    ("upsample,u",                                                                     //
-     po::value<size_t>()->default_value(16),                                           //
-     "Up-sampling ratio.")                                                             //
+  desc.add_options()                                                                    //
+    ("help,h",                                                                          //
+     "Show this message.")                                                              //
+    ("verbose,v",                                                                       //
+     "Show processing status.")                                                         //
+    ("prompt,p",                                                                        //
+     po::value<std::string>(),                                                          //
+     "Answer and skip prompt when value is set to \"yes\" or \"no\". "                  //
+     "Otherwise, prompt will show up.")                                                 //
+    ("memory,m",                                                                        //
+     po::value<double>()->default_value(1.0),                                           //
+     "Memory warning threshold in GiB. When estimated memory allocation exceeds "       //
+     "this value, prompt will show up.")                                                //
+    ("input,i",                                                                         //
+     po::value<std::string>(),                                                          //
+     "Input audio file path.")                                                          //
+    ("output,o",                                                                        //
+     po::value<std::string>(),                                                          //
+     "Output audio file path.")                                                         //
+    ("upsample,u",                                                                      //
+     po::value<size_t>()->default_value(1),                                             //
+     "Up-sampling ratio. When set to 1, FIR polyphase up-sampling is used. When set "   //
+     "to greater than 1, FFT up-sampling is used. FFT up-sampling requires large "      //
+     "amount of memory that is multiple of input file size and up-sampling ratio.")     //
+    ("trim",                                                                            //
+     "--trim has no effect when --upsample is set to greater than 1. When specified, "  //
+     "input frame count and output frame count become the same, by trimming artifacts " //
+     "introduced by multirate processing. When not specified, output signal becomes "   //
+     "longer than input signal. Additional frame count is "                             //
+     "(2560 + attack * samplerate) at front, and 1286 at back. Theoretically, trimmed " //
+     "signal is no longer true-peak limited.")                                          //
+    ("attack,a",                                                                        //
+     po::value<double>()->default_value(64.0 / 48000.0),                                //
+     "Attack time in seconds.")                                                         //
+    ("sustain,s",                                                                       //
+     po::value<double>()->default_value(64.0 / 48000.0),                                //
+     "Sustain time in seconds.")                                                        //
+    ("release,r",                                                                       //
+     po::value<double>()->default_value(0.0),                                           //
+     "Release time in seconds.")                                                        //
+    ("threshold,t",                                                                     //
+     po::value<double>()->default_value(-0.1),                                          //
+     "Limiter threshold in decibel.")                                                   //
+    ("gate,g",                                                                          //
+     po::value<double>()->default_value(-std::numeric_limits<double>::infinity()),      //
+     "Gate threshold in decibel.")                                                      //
+    ("link,l",                                                                          //
+     po::value<double>()->default_value(0.5),                                           //
+     "Stereo or multi-channel link amount in [0.0, 1.0]. 0.0 is no link, and "          //
+     "1.0 is full link.")                                                               //
     ;
 
   po::variables_map vm;
@@ -636,11 +634,7 @@ int main(int argc, char *argv[])
     }
   }
 
-  opt.precise = vm.count("precise");
   opt.trim = vm.count("trim");
-  if (opt.precise && opt.trim) {
-    std::cerr << "Warning: --trim has no effect when --precise is set.\n";
-  }
 
   // Load arguments related to limiter.
   LimiterParameter<double> param;
@@ -650,7 +644,7 @@ int main(int argc, char *argv[])
   param.thresholdDecibel = vm["threshold"].as<double>();
   param.gateDecibel = vm["gate"].as<double>();
   param.link = vm["link"].as<double>();
-  param.fold = vm["upsample"].as<size_t>();
+  param.upsample = vm["upsample"].as<size_t>();
 
   bool isInvalid = false;
   if (!isValidSecond(param.attackSeconds)) {
@@ -677,9 +671,12 @@ int main(int argc, char *argv[])
     std::cerr << "Error: Link amount must be in [0.0, 1.0].\n";
     isInvalid = true;
   }
-  if (param.fold <= 0) {
+  if (param.upsample <= 0) {
     std::cerr << "Error: Up-sampling ratio must be greater than 0.\n";
     isInvalid = true;
+  }
+  if (param.upsample > 1 && opt.trim) {
+    std::cerr << "Warning: --trim has no effect when --upsample is greater than 1.\n";
   }
   if (isInvalid || opt.verbose) {
     std::cout << std::format(
@@ -699,9 +696,9 @@ Link        : {}
 Up-sampling : {}
 )",
       inputPath, opt.outputPath.string(),
-      opt.precise ? "FFT (precise)" : "FIR Polyphase (non-precise)", opt.trim,
+      param.upsample > 1 ? "FFT (precise)" : "FIR Polyphase (non-precise)", opt.trim,
       param.attackSeconds, param.sustainSeconds, param.releaseSeconds,
-      param.thresholdDecibel, param.gateDecibel, param.link, param.fold);
+      param.thresholdDecibel, param.gateDecibel, param.link, param.upsample);
   }
   if (isInvalid) return EXIT_FAILURE;
 
@@ -719,9 +716,10 @@ Frame       : {}
       snd.info.samplerate, snd.info.channels, snd.info.frames);
   }
 
+  // Processing.
   auto start = std::chrono::steady_clock::now();
-  auto exitCode = opt.precise ? processPreciseMode(opt, snd, param)
-                              : processMemoryEfficientMode(opt, snd, param);
+  auto exitCode = param.upsample > 1 ? processPreciseMode(opt, snd, param)
+                                     : processMemoryEfficientMode(opt, snd, param);
   auto end = std::chrono::steady_clock::now();
   std::chrono::duration<double> elapsed = end - start;
   if (opt.verbose) {
