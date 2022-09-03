@@ -90,20 +90,26 @@ Below is list of command line options.
                                         this value, prompt will show up.
   -i [ --input ] arg                    Input audio file path.
   -o [ --output ] arg                   Output audio file path.
-  --precise                             When specified, FFT up-sampling is used
-                                        instead of FIR polyphase up-sampling.
-                                        FFT up-sampling requires large amount
-                                        of memory that is multiple of input
-                                        file size and up-sampling ratio.
-  --trim                                --trim has no effect when --precise is
-                                        set. When specified, input frame count
-                                        and output frame count become the same,
-                                        by trimming artifacts introduced by
-                                        multirate processing. When not
-                                        specified, output signal becomes longer
-                                        than input signal. Additional frame
-                                        count is (2560 + attack * samplerate)
-                                        at front, and 1286 at back.
+  -u [ --upsample ] arg (=1)            Up-sampling ratio. When set to 1, FIR
+                                        polyphase up-sampling is used. When set
+                                        to greater than 1, FFT up-sampling is
+                                        used. FFT up-sampling requires large
+                                        amount of memory that is multiple of
+                                        input file size and up-sampling ratio.
+                                        If FFT up-sampling is enabled and
+                                        up-sampled peak is below threshold,
+                                        processing will be skipped.
+  --trim                                --trim has no effect when --upsample is
+                                        set to greater than 1. When specified,
+                                        input frame count and output frame
+                                        count become the same, by trimming
+                                        artifacts introduced by multirate
+                                        processing. When not specified, output
+                                        signal becomes longer than input
+                                        signal. Additional frame count is (2560
+                                        + attack * samplerate) at front, and
+                                        1286 at back. Theoretically, trimmed
+                                        signal is no longer true-peak limited.
   -a [ --attack ] arg (=0.0013333333333333333)
                                         Attack time in seconds.
   -s [ --sustain ] arg (=0.0013333333333333333)
@@ -115,7 +121,6 @@ Below is list of command line options.
   -l [ --link ] arg (=0.5)              Stereo or multi-channel link amount in
                                         [0.0, 1.0]. 0.0 is no link, and 1.0 is
                                         full link.
-  -u [ --upsample ] arg (=16)           Up-sampling ratio.
 ```
 
 Below is an example invocation in PowerShell.

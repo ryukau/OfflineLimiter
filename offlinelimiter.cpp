@@ -135,7 +135,7 @@ public:
     close();
     file = sf_open(path.c_str(), SFM_READ, &info);
     if (!file) {
-      std::cerr << "Error: sf_open failed." << std::endl;
+      std::cerr << "Error: sf_open failed.\n";
       return EXIT_FAILURE;
     }
 
@@ -145,8 +145,7 @@ public:
   void load(std::vector<FFTW3Buffer> &data)
   {
     if (!file) {
-      std::cerr << "Error: SoundFile::load is called before SoundFile::open."
-                << std::endl;
+      std::cerr << "Error: SoundFile::load is called before SoundFile::open.\n";
       return;
     }
 
@@ -156,7 +155,7 @@ public:
 
     for (size_t ch = 0; ch < size_t(info.channels); ++ch) {
       if (data[ch].bufSize < static_cast<size_t>(info.frames)) {
-        std::cerr << "Error: FFTW3 buffer size is insufficient to load audio file.";
+        std::cerr << "Error: FFTW3 buffer size is insufficient to load audio file.\n";
         exit(EXIT_FAILURE);
       }
       for (sf_count_t i = 0; i < info.frames; ++i) {
@@ -168,8 +167,7 @@ public:
   void load(std::vector<double> &data)
   {
     if (!file) {
-      std::cerr << "Error: SoundFile::load is called before SoundFile::open."
-                << std::endl;
+      std::cerr << "Error: SoundFile::load is called before SoundFile::open.\n";
       return;
     }
 
@@ -181,7 +179,7 @@ public:
   void close()
   {
     if (file) {
-      if (sf_close(file) != 0) std::cerr << "Error: sf_close failed." << std::endl;
+      if (sf_close(file) != 0) std::cerr << "Error: sf_close failed.\n";
     }
   }
 
@@ -202,15 +200,15 @@ int writeWave(std::string path, std::vector<FFTW3Buffer> &data, const SF_INFO &i
 
   SNDFILE *file = sf_open(path.c_str(), SFM_WRITE, &info);
   if (!file) {
-    std::cerr << "Error: sf_open failed." << std::endl;
+    std::cerr << "Error: sf_open failed.\n";
     return EXIT_FAILURE;
   }
 
   if (sf_write_float(file, &raw[0], raw.size()) != sf_count_t(raw.size()))
-    std::cerr << "Error: " << sf_strerror(file) << std::endl;
+    std::cerr << "Error: " << sf_strerror(file) << "\n";
 
   if (sf_close(file) != 0) {
-    std::cerr << "Error: sf_close failed." << std::endl;
+    std::cerr << "Error: sf_close failed.\n";
     return EXIT_FAILURE;
   }
 
@@ -230,7 +228,7 @@ int writeWave(
 
   SNDFILE *file = sf_open(path.c_str(), SFM_WRITE, &info);
   if (!file) {
-    std::cerr << "Error: sf_open failed." << std::endl;
+    std::cerr << "Error: sf_open failed.\n";
     return EXIT_FAILURE;
   }
 
@@ -238,11 +236,11 @@ int writeWave(
 
   auto items = inputInfo.channels * frames;
   if (sf_write_double(file, &data[offset], items) != sf_count_t(items)) {
-    std::cerr << "Error: " << sf_strerror(file) << std::endl;
+    std::cerr << "Error: " << sf_strerror(file) << "\n";
   }
 
   if (sf_close(file) != 0) {
-    std::cerr << "Error: sf_close failed." << std::endl;
+    std::cerr << "Error: sf_close failed.\n";
     return EXIT_FAILURE;
   }
 
@@ -260,6 +258,7 @@ template<typename T> struct LimiterParameter {
 };
 
 struct UserOption {
+  std::filesystem::path inputPath;
   std::filesystem::path outputPath;
   bool verbose = false;
   bool skipPrompt = false;
@@ -268,11 +267,10 @@ struct UserOption {
   double memoryWarningThreshold = 1.0;
 };
 
-std::filesystem::path deriveOutputPath(const std::string &input)
+std::filesystem::path deriveOutputPath(const std::filesystem::path &input)
 {
-  std::filesystem::path path(input);
-  std::string filename = "limited_" + path.filename().string();
-  return path.parent_path() / std::filesystem::path(filename);
+  std::string filename = "limited_" + input.filename().string();
+  return input.parent_path() / std::filesystem::path(filename);
 }
 
 template<typename T> bool isValidSecond(T value)
@@ -287,7 +285,7 @@ template<typename T> bool isValidSecond(T value)
     && value <= nl::max();
 }
 
-void printPeakAmplitude(std::vector<FFTW3Buffer> &data, size_t length)
+double getPeakAmplitude(std::vector<FFTW3Buffer> &data, size_t length, bool verbose)
 {
   size_t maxPeakChannel = 0;
   double maxPeak = 0.0;
@@ -295,20 +293,25 @@ void printPeakAmplitude(std::vector<FFTW3Buffer> &data, size_t length)
   for (size_t ch = 0; ch < data.size(); ++ch) {
     auto peak = data[ch].peakAmplitude(length);
 
-    std::cout << std::format("Ch.{:02d} : {} [dB], {}\n", ch, ampToDecibel(peak), peak);
+    if (verbose) {
+      std::cout << std::format("Ch.{:02d} : {} [dB], {}\n", ch, ampToDecibel(peak), peak);
+    }
 
     if (peak > maxPeak) {
       maxPeak = peak;
       maxPeakChannel = ch;
     }
   }
-  std::cout << std::format(
-    "Max peak at ch.{}, {} [dB], or {} in amplitude.\n\n", maxPeakChannel,
-    ampToDecibel(maxPeak), maxPeak);
+  if (verbose) {
+    std::cout << std::format(
+      "Max peak at ch.{}, {} [dB], or {} in amplitude.\n\n", maxPeakChannel,
+      ampToDecibel(maxPeak), maxPeak);
+  }
+  return maxPeak;
 }
 
-void printPeakAmplitude(
-  std::vector<double> &data, const size_t channels, const size_t frames)
+double getPeakAmplitude(
+  std::vector<double> &data, const size_t channels, const size_t frames, bool verbose)
 {
   std::vector<double> peaks(channels);
 
@@ -321,16 +324,21 @@ void printPeakAmplitude(
   double maxPeak = 0.0;
   size_t maxPeakChannel = 0;
   for (size_t ch = 0; ch < peaks.size(); ++ch) {
-    std::cout << std::format(
-      "Ch.{:02d} : {} [dB], {}\n", ch, ampToDecibel(peaks[ch]), peaks[ch]);
+    if (verbose) {
+      std::cout << std::format(
+        "Ch.{:02d} : {} [dB], {}\n", ch, ampToDecibel(peaks[ch]), peaks[ch]);
+    }
     if (peaks[ch] > maxPeak) {
       maxPeak = peaks[ch];
       maxPeakChannel = ch;
     }
   }
-  std::cout << std::format(
-    "Max peak at ch.{}, {} [dB], or {} in amplitude.\n\n", maxPeakChannel,
-    ampToDecibel(maxPeak), maxPeak);
+  if (verbose) {
+    std::cout << std::format(
+      "Max peak at ch.{}, {} [dB], or {} in amplitude.\n\n", maxPeakChannel,
+      ampToDecibel(maxPeak), maxPeak);
+  }
+  return maxPeak;
 }
 
 int promptMemoryUsage(double estimatedMemoryUsage, UserOption &opt)
@@ -377,10 +385,8 @@ int processMemoryEfficientMode(
   const size_t channels = static_cast<size_t>(snd.info.channels);
   const size_t frames = static_cast<size_t>(snd.info.frames);
 
-  if (opt.verbose) {
-    std::cout << "\nInput Peaks\n";
-    printPeakAmplitude(data, channels, frames);
-  }
+  if (opt.verbose) std::cout << "\nInput Peaks\n";
+  getPeakAmplitude(data, channels, frames, opt.verbose);
 
   // Apply limiter.
   using HeCoef = HighEliminatorCoefficient<double>;
@@ -438,10 +444,8 @@ int processMemoryEfficientMode(
     }
   }
 
-  if (opt.verbose) {
-    std::cout << "\nOutput Peaks\n";
-    printPeakAmplitude(data, channels, frames);
-  }
+  if (opt.verbose) std::cout << "\nOutput Peaks\n";
+  getPeakAmplitude(data, channels, frames, opt.verbose);
 
   // Even when `--trim` is not specified, silence introduced by FIR group delay is
   // trimmed. See the above comment on latency about -3.
@@ -476,16 +480,25 @@ int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double>
 
   snd.load(data);
   snd.close();
-  if (opt.verbose) {
-    std::cout << "\nInput Peaks\n";
-    printPeakAmplitude(data, static_cast<size_t>(snd.info.frames));
-  }
+  if (opt.verbose) std::cout << "\nInput Peaks\n";
+  getPeakAmplitude(data, static_cast<size_t>(snd.info.frames), opt.verbose);
 
   if (opt.verbose) std::cout << "Up-sampling\n";
   for (auto &dt : data) dt.upSample(param.upsample, snd.info.frames);
-  if (opt.verbose) {
-    std::cout << "\nAlmost True Peaks\n";
-    printPeakAmplitude(data, static_cast<size_t>(param.upsample * snd.info.frames));
+  if (opt.verbose) std::cout << "\nAlmost True Peaks\n";
+  auto upPeak = getPeakAmplitude(
+    data, static_cast<size_t>(param.upsample * snd.info.frames), opt.verbose);
+
+  auto thresholdAmp = decibelToAmp(param.thresholdDecibel);
+  if (upPeak <= thresholdAmp) {
+    auto outputPathStr = opt.outputPath.string();
+
+    std::cout << std::format(
+      "Info: Peak is below threshold. Skipping {}\n", outputPathStr);
+
+    snd.open(opt.inputPath.string());
+    snd.load(data);
+    return writeWave(outputPathStr, data, snd.info);
   }
 
   // Apply limiter.
@@ -493,7 +506,7 @@ int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double>
   for (auto &lm : limiters) {
     lm.prepare(
       static_cast<double>(param.upsample * snd.info.samplerate), param.attackSeconds,
-      param.sustainSeconds, param.releaseSeconds, decibelToAmp(param.thresholdDecibel),
+      param.sustainSeconds, param.releaseSeconds, thresholdAmp,
       decibelToAmp(param.gateDecibel));
   }
 
@@ -516,10 +529,8 @@ int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double>
   // Down-sampling.
   if (opt.verbose) std::cout << "Down-sampling\n";
   for (auto &dt : data) dt.downSample(param.upsample, snd.info.frames, latency);
-  if (opt.verbose) {
-    std::cout << "\nOutput Peaks\n";
-    printPeakAmplitude(data, static_cast<size_t>(snd.info.frames));
-  }
+  if (opt.verbose) std::cout << "\nOutput Peaks\n";
+  getPeakAmplitude(data, static_cast<size_t>(snd.info.frames), opt.verbose);
 
   // Write to file.
   return writeWave(opt.outputPath.string(), data, snd.info);
@@ -553,7 +564,9 @@ int main(int argc, char *argv[])
      po::value<size_t>()->default_value(1),                                             //
      "Up-sampling ratio. When set to 1, FIR polyphase up-sampling is used. When set "   //
      "to greater than 1, FFT up-sampling is used. FFT up-sampling requires large "      //
-     "amount of memory that is multiple of input file size and up-sampling ratio.")     //
+     "amount of memory that is multiple of input file size and up-sampling ratio. If "  //
+     "FFT up-sampling is enabled and up-sampled peak is below threshold, processing "   //
+     "will be skipped.")                                                                //
     ("trim",                                                                            //
      "--trim has no effect when --upsample is set to greater than 1. When specified, "  //
      "input frame count and output frame count become the same, by trimming artifacts " //
@@ -613,11 +626,11 @@ int main(int argc, char *argv[])
     std::cout << desc << "\n";
     return EXIT_FAILURE;
   }
-  std::string inputPath{vm["input"].as<std::string>()};
+  opt.inputPath = std::filesystem::path(vm["input"].as<std::string>());
 
   opt.outputPath = vm.count("output")
     ? std::filesystem::path(vm["output"].as<std::string>())
-    : deriveOutputPath(inputPath);
+    : deriveOutputPath(opt.inputPath);
   if (std::filesystem::exists(opt.outputPath)) {
     std::cerr << std::format("Warning: {} already exists.\n", opt.outputPath.string());
 
@@ -695,7 +708,7 @@ Gate        : {} [dB]
 Link        : {}
 Up-sampling : {}
 )",
-      inputPath, opt.outputPath.string(),
+      opt.inputPath.string(), opt.outputPath.string(),
       param.upsample > 1 ? "FFT (precise)" : "FIR Polyphase (non-precise)", opt.trim,
       param.attackSeconds, param.sustainSeconds, param.releaseSeconds,
       param.thresholdDecibel, param.gateDecibel, param.link, param.upsample);
@@ -704,7 +717,7 @@ Up-sampling : {}
 
   // Load audio file infomation.
   SoundFile snd;
-  if (snd.open(inputPath) == EXIT_FAILURE) return EXIT_FAILURE;
+  if (snd.open(opt.inputPath.string()) == EXIT_FAILURE) return EXIT_FAILURE;
 
   if (opt.verbose) {
     std::cout << std::format(
