@@ -6,14 +6,9 @@ Offline limiter is an almost true peak limiter. "Almost" here means that accurac
 It's too heavy. [I think we're going to have to take this... *offline*.](https://youtu.be/1RAMRukKqQg?t=25)
 
 ## Known Bug
-When input signal contains sudden amplitude change, limiting may fail as output exceeds 0 dB. Confirmed on following situation.
+When input signal contains sudden amplitude change, and  FIR polyphase up-sampling is used, limiting may fail as output exceeds 0 dB. Mitigation is to apply limiter again, or use FFT up-sampling by setting 2 or greater number to `--upsample`.
 
-- +5 dB with similar to bass drum sound.
-- +60 dB amplitude blow up.
-
-Mitigation is to apply limiter again.
-
-Possible reason is that the amplitude modulation (AM). Offline limiter uses extracted amplitude envelope to apply AM in order to limit the amplitude. AM produces side-band frequency components. Then down-sampling interacts with that components and it results in undesirable peak. Therefore, another possible mitigation is to increase the attack time, but I personally don't recommend it.
+On up-sampled signal, limiter produces frequency components higher than source sampling rate. However, down-sampler trancates them. This truncation changes the peak in down-sampled signal.
 
 ## Build
 Requires C++ compiler with C++20 support.
@@ -85,9 +80,6 @@ Below is list of command line options.
   -p [ --prompt ] arg                   Answer and skip prompt when value is
                                         set to "yes" or "no". Otherwise, prompt
                                         will show up.
-  -m [ --memory ] arg (=1)              Memory warning threshold in GiB. When
-                                        estimated memory allocation exceeds
-                                        this value, prompt will show up.
   -i [ --input ] arg                    Input audio file path.
   -o [ --output ] arg                   Output audio file path.
   -u [ --upsample ] arg (=1)            Up-sampling ratio. When set to 1, FIR
@@ -98,7 +90,9 @@ Below is list of command line options.
                                         input file size and up-sampling ratio.
                                         If FFT up-sampling is enabled and
                                         up-sampled peak is below threshold,
-                                        processing will be skipped.
+                                        processing will be skipped. Recommend
+                                        to set to 16 or greater for precise
+                                        true-peak limiting.
   --trim                                --trim has no effect when --upsample is
                                         set to greater than 1. When specified,
                                         input frame count and output frame
@@ -110,6 +104,21 @@ Below is list of command line options.
                                         + attack * samplerate) at front, and
                                         1286 at back. Theoretically, trimmed
                                         signal is no longer true-peak limited.
+  -m [ --memory ] arg (=1)              Memory warning threshold in GiB. When
+                                        estimated memory allocation exceeds
+                                        this value, prompt will show up.
+  --maxiter arg (=4)                    Maximum iteration count for additional
+                                        stage limiting. Sometimes the result of
+                                        true-peak limiting still exceeds the
+                                        threshold. It's hard to predict the
+                                        final sample-peak before donw-sampling.
+                                        (If you know the method, please let me
+                                        know!) Therefore offlinelimiter applies
+                                        extra stage limiting in case of
+                                        insufficient limiting. Loop continues
+                                        until the final sample-peak becomes
+                                        below 0 dB, or iteration count reaches
+                                        --maxiter.
   -a [ --attack ] arg (=0.0013333333333333333)
                                         Attack time in seconds.
   -s [ --sustain ] arg (=0.0013333333333333333)

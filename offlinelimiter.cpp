@@ -17,11 +17,12 @@
 /*
 
 TODO:
-- Add test and option to trim silence caused by latency.
-- Change to use FFT convolution on memory efficient path.
+- Implement --maxiter to `processMemoryEfficientMode`. Latency must be considered.
+- Add fade-in and fade-out.
+- Add highpass.
 - Maybe add better progress text.
 - Maybe add output file format option.
-- Maybe Add second stage.
+- Maybe add gate.
 
 */
 
@@ -255,6 +256,7 @@ template<typename T> struct LimiterParameter {
   T gateDecibel = -std::numeric_limits<T>::infinity();
   T link = T(0.5);
   size_t upsample = 1;
+  size_t maxiter = 4;
 };
 
 struct UserOption {
@@ -304,7 +306,7 @@ double getPeakAmplitude(std::vector<FFTW3Buffer> &data, size_t length, bool verb
   }
   if (verbose) {
     std::cout << std::format(
-      "Max peak at ch.{}, {} [dB], or {} in amplitude.\n\n", maxPeakChannel,
+      "Max peak at ch.{}, {} [dB], or {} in amplitude.\n", maxPeakChannel,
       ampToDecibel(maxPeak), maxPeak);
   }
   return maxPeak;
@@ -335,7 +337,7 @@ double getPeakAmplitude(
   }
   if (verbose) {
     std::cout << std::format(
-      "Max peak at ch.{}, {} [dB], or {} in amplitude.\n\n", maxPeakChannel,
+      "Max peak at ch.{}, {} [dB], or {} in amplitude.\n", maxPeakChannel,
       ampToDecibel(maxPeak), maxPeak);
   }
   return maxPeak;
@@ -352,9 +354,7 @@ int promptMemoryUsage(double estimatedMemoryUsage, UserOption &opt)
 
     if (opt.skipPrompt) {
       if (!opt.isYes) {
-        if (opt.verbose) {
-          std::cout << "Info: Processing is terminated by --prompt no.\n";
-        }
+        std::cerr << "Info: Processing is terminated by --prompt no.\n";
         return EXIT_FAILURE;
       }
     } else {
@@ -385,7 +385,7 @@ int processMemoryEfficientMode(
   const size_t channels = static_cast<size_t>(snd.info.channels);
   const size_t frames = static_cast<size_t>(snd.info.frames);
 
-  if (opt.verbose) std::cout << "\nInput Peaks\n";
+  if (opt.verbose) std::cout << "### Input Peaks\n";
   getPeakAmplitude(data, channels, frames, opt.verbose);
 
   // Apply limiter.
@@ -418,7 +418,7 @@ int processMemoryEfficientMode(
       decibelToAmp(param.thresholdDecibel), decibelToAmp(param.gateDecibel));
   }
 
-  if (opt.verbose) std::cout << "Applying limiter\n";
+  if (opt.verbose) std::cout << "### Applying limiter\n";
 
   for (size_t frm = 0; frm < frames + margin; ++frm) {
     size_t index = channels * frm;
@@ -444,7 +444,7 @@ int processMemoryEfficientMode(
     }
   }
 
-  if (opt.verbose) std::cout << "\nOutput Peaks\n";
+  if (opt.verbose) std::cout << "### Output Peaks\n";
   getPeakAmplitude(data, channels, frames, opt.verbose);
 
   // Even when `--trim` is not specified, silence introduced by FIR group delay is
@@ -480,57 +480,68 @@ int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double>
 
   snd.load(data);
   snd.close();
-  if (opt.verbose) std::cout << "\nInput Peaks\n";
+  if (opt.verbose) std::cout << "### Input Peaks\n";
   getPeakAmplitude(data, static_cast<size_t>(snd.info.frames), opt.verbose);
 
-  if (opt.verbose) std::cout << "Up-sampling\n";
-  for (auto &dt : data) dt.upSample(param.upsample, snd.info.frames);
-  if (opt.verbose) std::cout << "\nAlmost True Peaks\n";
-  auto upPeak = getPeakAmplitude(
-    data, static_cast<size_t>(param.upsample * snd.info.frames), opt.verbose);
+  for (size_t iteration = 0; iteration < param.maxiter; ++iteration) {
+    if (opt.verbose) {
+      std::cout << std::format("## Iteration {}\n### Up-sampling\n", iteration);
+    }
+    for (auto &dt : data) dt.upSample(param.upsample, snd.info.frames);
+    if (opt.verbose) std::cout << "### Almost True Peaks\n";
+    auto upPeak = getPeakAmplitude(
+      data, static_cast<size_t>(param.upsample * snd.info.frames), opt.verbose);
 
-  auto thresholdAmp = decibelToAmp(param.thresholdDecibel);
-  if (upPeak <= thresholdAmp) {
-    auto outputPathStr = opt.outputPath.string();
+    auto thresholdAmp = decibelToAmp(param.thresholdDecibel);
+    if (upPeak <= thresholdAmp) {
+      auto outputPathStr = opt.outputPath.string();
 
-    std::cout << std::format(
-      "Info: Peak is below threshold. Skipping {}\n", outputPathStr);
+      std::cerr << std::format(
+        "Info: Peak is below threshold. Skipping {}\n", outputPathStr);
 
-    snd.open(opt.inputPath.string());
-    snd.load(data);
-    return writeWave(outputPathStr, data, snd.info);
-  }
-
-  // Apply limiter.
-  std::vector<Limiter<double>> limiters(data.size());
-  for (auto &lm : limiters) {
-    lm.prepare(
-      static_cast<double>(param.upsample * snd.info.samplerate), param.attackSeconds,
-      param.sustainSeconds, param.releaseSeconds, thresholdAmp,
-      decibelToAmp(param.gateDecibel));
-  }
-
-  if (opt.verbose) std::cout << "Applying limiter\n";
-
-  for (size_t idx = 0; idx < bufferSize; ++idx) {
-    // Stereo (or multi-channel) link.
-    auto maxAbs = 0.0;
-    for (size_t ch = 0; ch < data.size(); ++ch) {
-      maxAbs = std::max(maxAbs, std::abs(data[ch].buf[idx]));
+      snd.open(opt.inputPath.string());
+      snd.load(data);
+      return writeWave(outputPathStr, data, snd.info);
     }
 
-    // Finally, the signal goes into limiter.
-    for (size_t ch = 0; ch < data.size(); ++ch) {
-      auto &sig = data[ch].buf[idx];
-      sig = limiters[ch].process(sig, std::lerp(std::abs(sig), maxAbs, param.link));
+    // Apply limiter.
+    std::vector<Limiter<double>> limiters(data.size());
+    for (auto &lm : limiters) {
+      lm.prepare(
+        static_cast<double>(param.upsample * snd.info.samplerate), param.attackSeconds,
+        param.sustainSeconds, param.releaseSeconds, thresholdAmp,
+        decibelToAmp(param.gateDecibel));
+    }
+
+    if (opt.verbose) std::cout << "### Applying limiter\n";
+    for (size_t idx = 0; idx < bufferSize; ++idx) {
+      // Stereo (or multi-channel) link.
+      auto maxAbs = 0.0;
+      for (size_t ch = 0; ch < data.size(); ++ch) {
+        maxAbs = std::max(maxAbs, std::abs(data[ch].buf[idx]));
+      }
+
+      // Finally, the signal goes into limiter.
+      for (size_t ch = 0; ch < data.size(); ++ch) {
+        auto &sig = data[ch].buf[idx];
+        sig = limiters[ch].process(sig, std::lerp(std::abs(sig), maxAbs, param.link));
+      }
+    }
+
+    // Down-sampling.
+    if (opt.verbose) std::cout << "### Down-sampling\n";
+    for (auto &dt : data) dt.downSample(param.upsample, snd.info.frames, latency);
+    if (opt.verbose) std::cout << "### Output Peaks\n";
+    auto processedPeak
+      = getPeakAmplitude(data, static_cast<size_t>(snd.info.frames), opt.verbose);
+
+    // `65535 / 65536 == (2^16 - 1) / 2^16` is a number slightly below dynamic range.
+    // Setting the peak exactly at 1.0 may increases the risk of true-peak clipping.
+    if (processedPeak <= std::max(65535.0 / 65536.0, thresholdAmp)) break;
+    if (iteration == param.maxiter - 1) {
+      std::cerr << "Warning: Limiting still failed at maximum iteration count.\n";
     }
   }
-
-  // Down-sampling.
-  if (opt.verbose) std::cout << "Down-sampling\n";
-  for (auto &dt : data) dt.downSample(param.upsample, snd.info.frames, latency);
-  if (opt.verbose) std::cout << "\nOutput Peaks\n";
-  getPeakAmplitude(data, static_cast<size_t>(snd.info.frames), opt.verbose);
 
   // Write to file.
   return writeWave(opt.outputPath.string(), data, snd.info);
@@ -541,59 +552,77 @@ int main(int argc, char *argv[])
   namespace po = boost::program_options;
 
   po::options_description desc("Allowed options");
-  desc.add_options()                                                                    //
-    ("help,h",                                                                          //
-     "Show this message.")                                                              //
-    ("verbose,v",                                                                       //
-     "Show processing status.")                                                         //
-    ("prompt,p",                                                                        //
-     po::value<std::string>(),                                                          //
-     "Answer and skip prompt when value is set to \"yes\" or \"no\". "                  //
-     "Otherwise, prompt will show up.")                                                 //
-    ("memory,m",                                                                        //
-     po::value<double>()->default_value(1.0),                                           //
-     "Memory warning threshold in GiB. When estimated memory allocation exceeds "       //
-     "this value, prompt will show up.")                                                //
-    ("input,i",                                                                         //
-     po::value<std::string>(),                                                          //
-     "Input audio file path.")                                                          //
-    ("output,o",                                                                        //
-     po::value<std::string>(),                                                          //
-     "Output audio file path.")                                                         //
-    ("upsample,u",                                                                      //
-     po::value<size_t>()->default_value(1),                                             //
-     "Up-sampling ratio. When set to 1, FIR polyphase up-sampling is used. When set "   //
-     "to greater than 1, FFT up-sampling is used. FFT up-sampling requires large "      //
-     "amount of memory that is multiple of input file size and up-sampling ratio. If "  //
-     "FFT up-sampling is enabled and up-sampled peak is below threshold, processing "   //
-     "will be skipped.")                                                                //
-    ("trim",                                                                            //
-     "--trim has no effect when --upsample is set to greater than 1. When specified, "  //
-     "input frame count and output frame count become the same, by trimming artifacts " //
-     "introduced by multirate processing. When not specified, output signal becomes "   //
-     "longer than input signal. Additional frame count is "                             //
-     "(2560 + attack * samplerate) at front, and 1286 at back. Theoretically, trimmed " //
-     "signal is no longer true-peak limited.")                                          //
-    ("attack,a",                                                                        //
-     po::value<double>()->default_value(64.0 / 48000.0),                                //
-     "Attack time in seconds.")                                                         //
-    ("sustain,s",                                                                       //
-     po::value<double>()->default_value(64.0 / 48000.0),                                //
-     "Sustain time in seconds.")                                                        //
-    ("release,r",                                                                       //
-     po::value<double>()->default_value(0.0),                                           //
-     "Release time in seconds.")                                                        //
-    ("threshold,t",                                                                     //
-     po::value<double>()->default_value(-0.1),                                          //
-     "Limiter threshold in decibel.")                                                   //
-    ("gate,g",                                                                          //
-     po::value<double>()->default_value(-std::numeric_limits<double>::infinity()),      //
-     "Gate threshold in decibel.")                                                      //
-    ("link,l",                                                                          //
-     po::value<double>()->default_value(0.5),                                           //
-     "Stereo or multi-channel link amount in [0.0, 1.0]. 0.0 is no link, and "          //
-     "1.0 is full link.")                                                               //
-    ;
+  desc.add_options()
+    .
+    operator()("help,h", "Show this message.")
+    .
+    operator()("verbose,v", "Show processing status.")
+    .
+    operator()(
+      "prompt,p", po::value<std::string>(),
+      "Answer and skip prompt when value is set to \"yes\" or \"no\". "
+      "Otherwise, prompt will show up.")
+    .
+    operator()("input,i", po::value<std::string>(), "Input audio file path.")
+    .
+    operator()("output,o", po::value<std::string>(), "Output audio file path.")
+    .
+    operator()(
+      "upsample,u", po::value<size_t>()->default_value(1),
+      "Up-sampling ratio. When set to 1, FIR polyphase up-sampling is used. When set "
+      "to greater than 1, FFT up-sampling is used. FFT up-sampling requires large "
+      "amount of memory that is multiple of input file size and up-sampling ratio. If "
+      "FFT up-sampling is enabled and up-sampled peak is below threshold, processing "
+      "will be skipped. Recommend to set to 16 or greater for precise true-peak "
+      "limiting.")
+    .
+    operator()(
+      "trim",
+      "--trim has no effect when --upsample is set to greater than 1. When specified, "
+      "input frame count and output frame count become the same, by trimming artifacts "
+      "introduced by multirate processing. When not specified, output signal becomes "
+      "longer than input signal. Additional frame count is "
+      "(2560 + attack * samplerate) at front, and 1286 at back. Theoretically, trimmed "
+      "signal is no longer true-peak limited.")
+    .
+    operator()(
+      "memory,m", po::value<double>()->default_value(1.0),
+      "Memory warning threshold in GiB. When estimated memory allocation exceeds "
+      "this value, prompt will show up.")
+    .
+    operator()(
+      "maxiter", po::value<size_t>()->default_value(4),
+      "Maximum iteration count for additional stage limiting. Sometimes the result of "
+      "true-peak limiting still exceeds the threshold. It's hard to predict the final "
+      "sample-peak before donw-sampling. (If you know the method, please let me know!) "
+      "Therefore offlinelimiter applies extra stage limiting in case of insufficient "
+      "limiting. Loop continues until the final sample-peak becomes below 0 dB, or "
+      "iteration count reaches --maxiter.")
+    .
+    operator()(
+      "attack,a", po::value<double>()->default_value(64.0 / 48000.0),
+      "Attack time in seconds.")
+    .
+    operator()(
+      "sustain,s", po::value<double>()->default_value(64.0 / 48000.0),
+      "Sustain time in seconds.")
+    .
+    operator()(
+      "release,r", po::value<double>()->default_value(0.0), "Release time in seconds.")
+    .
+    operator()(
+      "threshold,t", po::value<double>()->default_value(-0.1),
+      "Limiter threshold in decibel.")
+    .
+    operator()(
+      "gate,g",
+      po::value<double>()->default_value(-std::numeric_limits<double>::infinity()),
+      "Gate threshold in decibel.")
+    .
+    operator()(
+      "link,l", po::value<double>()->default_value(0.5),
+      "Stereo or multi-channel link amount in [0.0, 1.0]. 0.0 is no link, and "
+      "1.0 is full link.");
 
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -602,6 +631,7 @@ int main(int argc, char *argv[])
   // Load arguments not directly related to limiter.
   UserOption opt;
   opt.verbose = vm.count("verbose");
+  if (opt.verbose) std::cout << "---\n\n";
 
   if (vm.count("prompt")) {
     auto answer = vm["prompt"].as<std::string>();
@@ -636,7 +666,7 @@ int main(int argc, char *argv[])
 
     if (opt.skipPrompt) {
       if (!opt.isYes) {
-        if (opt.verbose) std::cout << "Info: Processing is terminated by --prompt no.\n";
+        std::cerr << "Info: Processing is terminated by --prompt no.\n";
         return EXIT_FAILURE;
       }
     } else {
@@ -658,6 +688,7 @@ int main(int argc, char *argv[])
   param.gateDecibel = vm["gate"].as<double>();
   param.link = vm["link"].as<double>();
   param.upsample = vm["upsample"].as<size_t>();
+  param.maxiter = vm["maxiter"].as<size_t>();
 
   bool isInvalid = false;
   if (!isValidSecond(param.attackSeconds)) {
@@ -691,15 +722,16 @@ int main(int argc, char *argv[])
   if (param.upsample > 1 && opt.trim) {
     std::cerr << "Warning: --trim has no effect when --upsample is greater than 1.\n";
   }
+  if (param.maxiter <= 0) {
+    std::cerr << "Error: Maximum iteration count must be greater than 0.\n";
+    isInvalid = true;
+  }
   if (isInvalid || opt.verbose) {
     std::cout << std::format(
-      R"(
-Input path  : {}
+      R"(Input path  : {}
 Output path : {}
-
 Mode        : {}
 Trim        : {}
-
 Attack      : {} [s]
 Sustain     : {} [s]
 Release     : {} [s]
@@ -721,8 +753,7 @@ Up-sampling : {}
 
   if (opt.verbose) {
     std::cout << std::format(
-      R"(
-Sample Rate : {} [Hz]
+      R"(Sample Rate : {} [Hz]
 Channel     : {}
 Frame       : {}
 )",
