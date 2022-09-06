@@ -130,6 +130,9 @@ Below is list of command line options.
   -l [ --link ] arg (=0.5)              Stereo or multi-channel link amount in
                                         [0.0, 1.0]. 0.0 is no link, and 1.0 is
                                         full link.
+  -f [ --fadeout ] arg (=0.001)         Fade-out time in seconds. Equal power
+                                        curve (or quarter cosine curve) is
+                                        used.
 ```
 
 Below is an example invocation in PowerShell.
