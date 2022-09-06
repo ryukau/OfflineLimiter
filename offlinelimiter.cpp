@@ -255,6 +255,7 @@ template<typename T> struct LimiterParameter {
   T thresholdDecibel = T(-0.1);
   T gateDecibel = -std::numeric_limits<T>::infinity();
   T link = T(0.5);
+  T fadeoutSeconds = T(0.002);
   size_t upsample = 1;
   size_t maxiter = 4;
 };
@@ -420,7 +421,8 @@ int processMemoryEfficientMode(
 
   if (opt.verbose) std::cout << "### Applying limiter\n";
 
-  for (size_t frm = 0; frm < frames + margin; ++frm) {
+  size_t bufferSize = size_t(frames + margin);
+  for (size_t frm = 0; frm < bufferSize; ++frm) {
     size_t index = channels * frm;
 
     for (size_t ch = 0; ch < channels; ++ch) {
@@ -444,17 +446,38 @@ int processMemoryEfficientMode(
     }
   }
 
+  // Fade-out.
+  size_t fadeoutLength = size_t(param.fadeoutSeconds * snd.info.samplerate);
+  if (fadeoutLength >= bufferSize) {
+    std::cerr << "Warning: Fade-out time is longer than input signal.\n";
+    fadeoutLength = bufferSize;
+  }
+  size_t fadeoutCounter = 0;
+  for (size_t frm = bufferSize - fadeoutLength; frm < bufferSize; ++frm) {
+    double gain
+      = std::cos(0.5 * std::numbers::pi * double(fadeoutCounter) / double(fadeoutLength));
+    ++fadeoutCounter;
+
+    size_t index = channels * frm;
+    for (size_t ch = 0; ch < channels; ++ch) data[index + ch] *= gain;
+  }
+
   if (opt.verbose) std::cout << "### Output Peaks\n";
   getPeakAmplitude(data, channels, frames, opt.verbose);
 
+  //
   // Even when `--trim` is not specified, silence introduced by FIR group delay is
-  // trimmed. See the above comment on latency about -3.
+  // trimmed.
+  //
+  //`OverlapSaveConvolver` output is 1 sample earlier than `scipy.signal.convolve`, and
+  // there are 3 `OverlapSaveConvolver`. This is the reason of `-3` on `firLatency`.
+  //
   sf_count_t overlapAddLatency
     = HeCoef::fir.size() + UpCoef::bufferSize + DownCoef::bufferSize;
   sf_count_t firLatency = HeCoef::delay + UpCoef::intDelay + DownCoef::intDelay - 3;
   sf_count_t totalLatency = limiterLatency + overlapAddLatency + firLatency;
   sf_count_t offset = opt.trim ? totalLatency : firLatency;
-  sf_count_t trimedFrames = opt.trim ? frames : frames + margin - firLatency;
+  sf_count_t trimedFrames = opt.trim ? frames : bufferSize - firLatency;
   return writeWave(
     opt.outputPath.string(), data, trimedFrames, snd.info.channels * offset, snd.info);
 }
@@ -543,6 +566,21 @@ int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double>
     }
   }
 
+  // Fade-out.
+  sf_count_t fadeoutLength = sf_count_t(param.fadeoutSeconds * snd.info.samplerate);
+  if (fadeoutLength >= snd.info.frames) {
+    std::cerr << "Warning: Fade-out time is longer than input signal.\n";
+    fadeoutLength = snd.info.frames;
+  }
+  sf_count_t fadeoutCounter = 0;
+  for (sf_count_t idx = snd.info.frames - fadeoutLength; idx < snd.info.frames; ++idx) {
+    double gain
+      = std::cos(0.5 * std::numbers::pi * double(fadeoutCounter) / double(fadeoutLength));
+    ++fadeoutCounter;
+
+    for (size_t ch = 0; ch < data.size(); ++ch) data[ch].buf[idx] *= gain;
+  }
+
   // Write to file.
   return writeWave(opt.outputPath.string(), data, snd.info);
 }
@@ -622,7 +660,11 @@ int main(int argc, char *argv[])
     operator()(
       "link,l", po::value<double>()->default_value(0.5),
       "Stereo or multi-channel link amount in [0.0, 1.0]. 0.0 is no link, and "
-      "1.0 is full link.");
+      "1.0 is full link.")
+    .
+    operator()(
+      "fadeout,f", po::value<double>()->default_value(0.001),
+      "Fade-out time in seconds. Equal power curve (or quarter cosine curve) is used.");
 
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -681,16 +723,28 @@ int main(int argc, char *argv[])
 
   // Load arguments related to limiter.
   LimiterParameter<double> param;
+  param.upsample = vm["upsample"].as<size_t>();
+  param.maxiter = vm["maxiter"].as<size_t>();
   param.attackSeconds = vm["attack"].as<double>();
   param.sustainSeconds = vm["sustain"].as<double>();
   param.releaseSeconds = vm["release"].as<double>();
   param.thresholdDecibel = vm["threshold"].as<double>();
   param.gateDecibel = vm["gate"].as<double>();
   param.link = vm["link"].as<double>();
-  param.upsample = vm["upsample"].as<size_t>();
-  param.maxiter = vm["maxiter"].as<size_t>();
+  param.fadeoutSeconds = vm["fadeout"].as<double>();
 
   bool isInvalid = false;
+  if (param.upsample <= 0) {
+    std::cerr << "Error: Up-sampling ratio must be greater than 0.\n";
+    isInvalid = true;
+  }
+  if (param.upsample > 1 && opt.trim) {
+    std::cerr << "Warning: --trim has no effect when --upsample is greater than 1.\n";
+  }
+  if (param.maxiter <= 0) {
+    std::cerr << "Error: Maximum iteration count must be greater than 0.\n";
+    isInvalid = true;
+  }
   if (!isValidSecond(param.attackSeconds)) {
     std::cerr << "Error: Attack time must be positive value in seconds.\n";
     isInvalid = true;
@@ -715,15 +769,8 @@ int main(int argc, char *argv[])
     std::cerr << "Error: Link amount must be in [0.0, 1.0].\n";
     isInvalid = true;
   }
-  if (param.upsample <= 0) {
-    std::cerr << "Error: Up-sampling ratio must be greater than 0.\n";
-    isInvalid = true;
-  }
-  if (param.upsample > 1 && opt.trim) {
-    std::cerr << "Warning: --trim has no effect when --upsample is greater than 1.\n";
-  }
-  if (param.maxiter <= 0) {
-    std::cerr << "Error: Maximum iteration count must be greater than 0.\n";
+  if (!isValidSecond(param.fadeoutSeconds)) {
+    std::cerr << "Error: Fade-out time must be positive value in seconds.\n";
     isInvalid = true;
   }
   if (isInvalid || opt.verbose) {
