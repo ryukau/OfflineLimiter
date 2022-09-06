@@ -10,6 +10,10 @@ When input signal contains sudden amplitude change, and  FIR polyphase up-sampli
 
 On up-sampled signal, limiter produces frequency components higher than source sampling rate. However, down-sampler trancates them. This truncation changes the peak in down-sampled signal.
 
+---
+
+When `--fadeout` is non-zero, `--trim` is set, and FIR polyphase up-sampling is used, fade-out is only partially applied to output. Current implementation doesn't account the length of trim.
+
 ## Build
 Requires C++ compiler with C++20 support.
 
