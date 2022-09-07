@@ -193,3 +193,45 @@ public:
     return std::accumulate(input.begin(), input.end(), Sample(0));
   }
 };
+
+inline std::vector<double>
+getNuttallFir(size_t nTap, double sampleRate, double cutoffHz, bool isHighpass)
+{
+  const auto nyquist = sampleRate / double(2);
+  if (cutoffHz > nyquist) cutoffHz = nyquist;
+
+  bool isEven = (nTap / 2 & 1) == 0;
+  size_t end = nTap;
+  if (isEven) --end; // Always use odd length FIR.
+
+  std::vector<double> coefficient(nTap);
+
+  auto mid = double(end - 1) / double(2);
+  auto cutoff = double(2.0 * std::numbers::pi) * cutoffHz / sampleRate;
+  for (size_t idx = 0; idx < end; ++idx) {
+    double m = double(idx) - mid;
+    double x = cutoff * m;
+    coefficient[idx] = x == 0 ? double(1) : std::sin(x) / (x);
+  }
+
+  // Apply Nuttall window.
+  double tpN = double(2.0 * std::numbers::pi) / double(end - 1);
+  for (size_t n = 0; n < end; ++n) {
+    auto c0 = double(0.3635819);
+    auto c1 = double(0.4891775) * std::cos(tpN * n);
+    auto c2 = double(0.1365995) * std::cos(tpN * n * double(2));
+    auto c3 = double(0.0106411) * std::cos(tpN * n * double(3));
+    coefficient[n] *= c0 - c1 + c2 - c3;
+  }
+
+  // Normalize to fix FIR scaling.
+  double sum = std::accumulate(coefficient.begin(), coefficient.end(), double(0));
+  for (size_t idx = 0; idx < end; ++idx) coefficient[idx] /= sum;
+
+  if (isHighpass) {
+    for (size_t idx = 0; idx < end; ++idx) coefficient[idx] = -coefficient[idx];
+    coefficient[size_t(mid)] += double(1);
+  }
+
+  return coefficient;
+}

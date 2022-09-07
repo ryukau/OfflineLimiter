@@ -18,11 +18,10 @@
 
 TODO:
 - Implement --maxiter to `processMemoryEfficientMode`. Latency must be considered.
-- Add fade-in and fade-out.
-- Add highpass.
 - Maybe add better progress text.
 - Maybe add output file format option.
-- Maybe add gate.
+- Maybe apply gate after limiting.
+- Maybe add fade-in.
 
 */
 
@@ -165,7 +164,7 @@ public:
     }
   }
 
-  void load(std::vector<double> &data)
+  void load(std::vector<double> &data, size_t extraFrames = 0)
   {
     if (!file) {
       std::cerr << "Error: SoundFile::load is called before SoundFile::open.\n";
@@ -173,7 +172,7 @@ public:
     }
 
     sf_count_t items = info.channels * info.frames;
-    data.resize(items);
+    data.resize(items + info.channels * extraFrames);
     sf_read_double(file, &data[0], items);
   }
 
@@ -187,15 +186,21 @@ public:
   ~SoundFile() { close(); }
 };
 
-int writeWave(std::string path, std::vector<FFTW3Buffer> &data, const SF_INFO &inputInfo)
+int writeWave(
+  std::string path,
+  std::vector<FFTW3Buffer> &data,
+  const sf_count_t frames,
+  const sf_count_t offset,
+  const SF_INFO &inputInfo)
 {
   SF_INFO info = inputInfo;
+  info.frames = frames;
   info.format = (SF_FORMAT_WAV | SF_FORMAT_FLOAT);
 
   std::vector<float> raw(info.channels * info.frames);
-  for (size_t idx = 0; idx < size_t(info.frames); ++idx) {
-    for (size_t ch = 0; ch < size_t(info.channels); ++ch) {
-      raw[info.channels * idx + ch] = static_cast<float>(data[ch].buf[idx]);
+  for (size_t ch = 0; ch < size_t(info.channels); ++ch) {
+    for (size_t idx = 0; idx < size_t(info.frames); ++idx) {
+      raw[info.channels * idx + ch] = static_cast<float>(data[ch].buf[offset + idx]);
     }
   }
 
@@ -249,6 +254,7 @@ int writeWave(
 }
 
 template<typename T> struct LimiterParameter {
+  T highpaddCutoffHz = T(0.0);
   T attackSeconds = T(64.0 / 48000.0);
   T sustainSeconds = T(64.0 / 48000.0);
   T releaseSeconds = 0;
@@ -379,35 +385,66 @@ int processMemoryEfficientMode(
   }
 
   // Load file.
-  std::vector<double> data;
-  snd.load(data);
-  snd.close();
-
-  const size_t channels = static_cast<size_t>(snd.info.channels);
-  const size_t frames = static_cast<size_t>(snd.info.frames);
-
-  if (opt.verbose) std::cout << "### Input Peaks\n";
-  getPeakAmplitude(data, channels, frames, opt.verbose);
-
-  // Apply limiter.
   using HeCoef = HighEliminatorCoefficient<double>;
   using UpCoef = UpSamplerCoefficient<double>;
   using DownCoef = DownSamplerCoefficient<double>;
 
+  const size_t channels = static_cast<size_t>(snd.info.channels);
+  const size_t frames = static_cast<size_t>(snd.info.frames);
+
+  const bool doHighpass = param.highpaddCutoffHz > 0;
+  const size_t highpassFrames = doHighpass ? snd.info.samplerate : 0;
+  size_t highpassLatency = highpassFrames / 2;
+  if (highpassLatency % 2 == 0 && highpassLatency > 0) --highpassLatency;
+
   const auto limiterLatency
     = Limiter<double>::latency(snd.info.samplerate, param.attackSeconds);
   const auto margin = limiterLatency
-    + 2 * (HeCoef::fir.size() + UpCoef::bufferSize + DownCoef::bufferSize);
+    + 2
+      * (HeCoef::fir.size() + UpCoef::bufferSize + DownCoef::bufferSize + highpassFrames);
+  const size_t bufferSize = size_t(frames + margin);
 
-  data.resize(data.size() + channels * margin);
+  std::vector<double> data;
+  snd.load(data, margin);
+  snd.close();
 
-  std::vector<OverlapSaveConvolver> highEliminators(channels);
-  for (auto &he : highEliminators) {
-    he.init(HeCoef::fir.size(), HeCoef::delay);
-    he.setFir(&HeCoef::fir[0], 0, HeCoef::fir.size());
-    he.reset();
+  if (opt.verbose) std::cout << "### Input Peaks\n";
+  getPeakAmplitude(data, channels, frames, opt.verbose);
+
+  // Apply filters.
+  // - Highpass to remove direct current.
+  // - Lowpass to remove near Nyquist frequency components.
+  if (doHighpass) {
+    auto highpassFir
+      = getNuttallFir(highpassFrames, snd.info.samplerate, param.highpaddCutoffHz, true);
+    std::vector<OverlapSaveConvolver> highpass(channels);
+    for (auto &hp : highpass) {
+      hp.init(highpassFir.size(), 0);
+      hp.setFir(&highpassFir[0], 0, highpassFir.size());
+      hp.reset();
+    }
+    for (size_t frm = 0; frm < bufferSize; ++frm) {
+      size_t index = channels * frm;
+      for (size_t ch = 0; ch < channels; ++ch) {
+        data[index + ch] = highpass[ch].process(data[index + ch]);
+      }
+    }
   }
 
+  std::vector<OverlapSaveConvolver> lowpass(channels);
+  for (auto &lp : lowpass) {
+    lp.init(HeCoef::fir.size(), 0);
+    lp.setFir(&HeCoef::fir[0], 0, HeCoef::fir.size());
+    lp.reset();
+  }
+  for (size_t frm = 0; frm < bufferSize; ++frm) {
+    size_t index = channels * frm;
+    for (size_t ch = 0; ch < channels; ++ch) {
+      data[index + ch] = lowpass[ch].process(data[index + ch]);
+    }
+  }
+
+  // Apply limiter.
   std::vector<FirUpSampler<double, UpCoef>> upSampler(channels);
   std::vector<FirDownSampler<double, DownCoef>> downSampler(channels);
 
@@ -420,13 +457,11 @@ int processMemoryEfficientMode(
   }
 
   if (opt.verbose) std::cout << "### Applying limiter\n";
-
-  size_t bufferSize = size_t(frames + margin);
   for (size_t frm = 0; frm < bufferSize; ++frm) {
     size_t index = channels * frm;
 
     for (size_t ch = 0; ch < channels; ++ch) {
-      upSampler[ch].process(highEliminators[ch].process(data[index + ch]));
+      upSampler[ch].process(data[index + ch]);
     }
 
     for (size_t jdx = 0; jdx < UpCoef::upfold; ++jdx) {
@@ -463,21 +498,22 @@ int processMemoryEfficientMode(
   }
 
   if (opt.verbose) std::cout << "### Output Peaks\n";
-  getPeakAmplitude(data, channels, frames, opt.verbose);
+  getPeakAmplitude(data, channels, bufferSize, opt.verbose);
 
   //
   // Even when `--trim` is not specified, silence introduced by FIR group delay is
   // trimmed.
   //
-  //`OverlapSaveConvolver` output is 1 sample earlier than `scipy.signal.convolve`, and
-  // there are 3 `OverlapSaveConvolver`. This is the reason of `-3` on `firLatency`.
+  // `OverlapSaveConvolver` output is 1 sample earlier than `scipy.signal.convolve`. This
+  // is the reason of negative constants (-3 and -1) on `firLatency`.
   //
   sf_count_t overlapAddLatency
-    = HeCoef::fir.size() + UpCoef::bufferSize + DownCoef::bufferSize;
+    = HeCoef::fir.size() + UpCoef::bufferSize + DownCoef::bufferSize + highpassFrames;
   sf_count_t firLatency = HeCoef::delay + UpCoef::intDelay + DownCoef::intDelay - 3;
+  if (doHighpass) firLatency += highpassLatency - 1;
   sf_count_t totalLatency = limiterLatency + overlapAddLatency + firLatency;
-  sf_count_t offset = opt.trim ? totalLatency : firLatency;
-  sf_count_t trimedFrames = opt.trim ? frames : bufferSize - firLatency;
+  sf_count_t offset = opt.trim ? totalLatency : overlapAddLatency;
+  sf_count_t trimedFrames = opt.trim ? frames : bufferSize - overlapAddLatency;
   return writeWave(
     opt.outputPath.string(), data, trimedFrames, snd.info.channels * offset, snd.info);
 }
@@ -492,10 +528,19 @@ int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double>
     if (promptMemoryUsage(estimatedMemoryUsage, opt) == EXIT_FAILURE) return EXIT_FAILURE;
   }
 
-  // Up-sampling.
-  const auto latency = Limiter<double>::latency(
+  // Process limiter.
+  const bool doHighpass = param.highpaddCutoffHz > 0;
+  const size_t highpassFrames = doHighpass ? snd.info.samplerate : 0;
+  size_t highpassLatency = highpassFrames / 2;
+  if (highpassLatency % 2 == 0 && highpassLatency > 0) --highpassLatency;
+
+  // -1 from OverlapSaveConvolver.
+  const size_t writeOffset = doHighpass ? highpassFrames + highpassLatency - 1 : 0;
+
+  const auto limiterLatency = Limiter<double>::latency(
     static_cast<double>(param.upsample * snd.info.samplerate), param.attackSeconds);
-  const auto bufferSize = param.upsample * snd.info.frames + latency;
+  const auto baseSize = snd.info.frames + (doHighpass ? 2 * highpassFrames : 0);
+  const auto bufferSize = param.upsample * baseSize + limiterLatency;
   std::vector<FFTW3Buffer> data;
   data.resize(snd.info.channels);
 
@@ -506,14 +551,29 @@ int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double>
   if (opt.verbose) std::cout << "### Input Peaks\n";
   getPeakAmplitude(data, static_cast<size_t>(snd.info.frames), opt.verbose);
 
+  if (doHighpass) {
+    auto highpassFir
+      = getNuttallFir(highpassFrames, snd.info.samplerate, param.highpaddCutoffHz, true);
+    std::vector<OverlapSaveConvolver> highpass(snd.info.channels);
+    for (auto &hp : highpass) {
+      hp.init(highpassFir.size(), 0);
+      hp.setFir(&highpassFir[0], 0, highpassFir.size());
+      hp.reset();
+    }
+    for (size_t ch = 0; ch < snd.info.channels; ++ch) {
+      for (size_t frm = 0; frm < baseSize; ++frm) {
+        data[ch].buf[frm] = highpass[ch].process(data[ch].buf[frm]);
+      }
+    }
+  }
+
   for (size_t iteration = 0; iteration < param.maxiter; ++iteration) {
     if (opt.verbose) {
       std::cout << std::format("## Iteration {}\n### Up-sampling\n", iteration);
     }
-    for (auto &dt : data) dt.upSample(param.upsample, snd.info.frames);
+    for (auto &dt : data) dt.upSample(param.upsample, baseSize);
     if (opt.verbose) std::cout << "### Almost True Peaks\n";
-    auto upPeak = getPeakAmplitude(
-      data, static_cast<size_t>(param.upsample * snd.info.frames), opt.verbose);
+    auto upPeak = getPeakAmplitude(data, bufferSize, opt.verbose);
 
     auto thresholdAmp = decibelToAmp(param.thresholdDecibel);
     if (upPeak <= thresholdAmp) {
@@ -524,7 +584,7 @@ int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double>
 
       snd.open(opt.inputPath.string());
       snd.load(data);
-      return writeWave(outputPathStr, data, snd.info);
+      return writeWave(outputPathStr, data, snd.info.frames, writeOffset, snd.info);
     }
 
     // Apply limiter.
@@ -553,10 +613,9 @@ int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double>
 
     // Down-sampling.
     if (opt.verbose) std::cout << "### Down-sampling\n";
-    for (auto &dt : data) dt.downSample(param.upsample, snd.info.frames, latency);
+    for (auto &dt : data) dt.downSample(param.upsample, baseSize, limiterLatency);
     if (opt.verbose) std::cout << "### Output Peaks\n";
-    auto processedPeak
-      = getPeakAmplitude(data, static_cast<size_t>(snd.info.frames), opt.verbose);
+    auto processedPeak = getPeakAmplitude(data, baseSize, opt.verbose);
 
     // `65535 / 65536 == (2^16 - 1) / 2^16` is a number slightly below dynamic range.
     // Setting the peak exactly at 1.0 may increases the risk of true-peak clipping.
@@ -567,22 +626,23 @@ int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double>
   }
 
   // Fade-out.
-  sf_count_t fadeoutLength = sf_count_t(param.fadeoutSeconds * snd.info.samplerate);
-  if (fadeoutLength >= snd.info.frames) {
+  size_t fadeoutLength = static_cast<size_t>(param.fadeoutSeconds * snd.info.samplerate);
+  if (fadeoutLength >= static_cast<size_t>(snd.info.frames)) {
     std::cerr << "Warning: Fade-out time is longer than input signal.\n";
     fadeoutLength = snd.info.frames;
   }
-  sf_count_t fadeoutCounter = 0;
-  for (sf_count_t idx = snd.info.frames - fadeoutLength; idx < snd.info.frames; ++idx) {
-    double gain
-      = std::cos(0.5 * std::numbers::pi * double(fadeoutCounter) / double(fadeoutLength));
-    ++fadeoutCounter;
+  const size_t fadeoutOffset = writeOffset + snd.info.frames - fadeoutLength;
+  for (size_t ch = 0; ch < data.size(); ++ch) {
+    for (size_t idx = 0; idx < fadeoutLength; ++idx) {
+      double gain
+        = std::cos(0.5 * std::numbers::pi * double(idx) / double(fadeoutLength));
 
-    for (size_t ch = 0; ch < data.size(); ++ch) data[ch].buf[idx] *= gain;
+      data[ch].buf[fadeoutOffset + idx] *= gain;
+    }
   }
 
   // Write to file.
-  return writeWave(opt.outputPath.string(), data, snd.info);
+  return writeWave(opt.outputPath.string(), data, snd.info.frames, writeOffset, snd.info);
 }
 
 int main(int argc, char *argv[])
@@ -636,6 +696,11 @@ int main(int argc, char *argv[])
       "Therefore offlinelimiter applies extra stage limiting in case of insufficient "
       "limiting. Loop continues until the final sample-peak becomes below 0 dB, or "
       "iteration count reaches --maxiter.")
+    .
+    operator()(
+      "highpass", po::value<double>()->default_value(0.0),
+      "Cutoff frequency of linear phase highpass filter in Hz. Inactivate when set to 0. "
+      "Useful to eliminate direct current.")
     .
     operator()(
       "attack,a", po::value<double>()->default_value(64.0 / 48000.0),
@@ -725,6 +790,7 @@ int main(int argc, char *argv[])
   LimiterParameter<double> param;
   param.upsample = vm["upsample"].as<size_t>();
   param.maxiter = vm["maxiter"].as<size_t>();
+  param.highpaddCutoffHz = vm["highpass"].as<double>();
   param.attackSeconds = vm["attack"].as<double>();
   param.sustainSeconds = vm["sustain"].as<double>();
   param.releaseSeconds = vm["release"].as<double>();
@@ -734,6 +800,10 @@ int main(int argc, char *argv[])
   param.fadeoutSeconds = vm["fadeout"].as<double>();
 
   bool isInvalid = false;
+  if (std::isnan(param.highpaddCutoffHz)) {
+    std::cerr << "Error: Highpass cutoff frequency must not be NaN.\n";
+    isInvalid = true;
+  }
   if (param.upsample <= 0) {
     std::cerr << "Error: Up-sampling ratio must be greater than 0.\n";
     isInvalid = true;
