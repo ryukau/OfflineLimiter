@@ -8,7 +8,7 @@ It's too heavy. [I think we're going to have to take this... *offline*.](https:/
 ## Known Bug
 When input signal contains sudden amplitude change, and  FIR polyphase up-sampling is used, limiting may fail as output exceeds 0 dB. Mitigation is to apply limiter again, or use FFT up-sampling by setting 2 or greater number to `--upsample`.
 
-On up-sampled signal, limiter produces frequency components higher than source sampling rate. However, down-sampler trancates them. This truncation changes the peak in down-sampled signal.
+Possible reason is that, on up-sampled signal, limiter produces frequency components higher than source sampling rate. However, down-sampler trancates them. This truncation changes the peak in down-sampled signal.
 
 ---
 
@@ -123,6 +123,10 @@ Below is list of command line options.
                                         until the final sample-peak becomes
                                         below 0 dB, or iteration count reaches
                                         --maxiter.
+  --highpass arg (=0)                   Cutoff frequency of linear phase
+                                        highpass filter in Hz. Inactivate when
+                                        set to 0. Useful to eliminate direct
+                                        current.
   -a [ --attack ] arg (=0.0013333333333333333)
                                         Attack time in seconds.
   -s [ --sustain ] arg (=0.0013333333333333333)
