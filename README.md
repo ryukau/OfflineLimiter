@@ -20,6 +20,7 @@ Requires C++ compiler with C++20 support.
 Dependencies are following.
 
 - Boost::program_options
+- Boost::exception
 - FFTW3
 - libsndfile
 

@@ -31,6 +31,7 @@ TODO:
 #include "limiter.hpp"
 #include "polyphase.hpp"
 
+#include <boost/exception/diagnostic_information.hpp>
 #include <boost/program_options.hpp>
 #include <fftw3.h>
 #include <sndfile.h>
@@ -254,7 +255,9 @@ int writeWave(
 }
 
 template<typename T> struct LimiterParameter {
-  T highpaddCutoffHz = T(0.0);
+  size_t upsample = 1;
+  size_t maxiter = 4;
+  T highpassCutoffHz = T(0.0);
   T attackSeconds = T(64.0 / 48000.0);
   T sustainSeconds = T(64.0 / 48000.0);
   T releaseSeconds = 0;
@@ -262,8 +265,6 @@ template<typename T> struct LimiterParameter {
   T gateDecibel = -std::numeric_limits<T>::infinity();
   T link = T(0.5);
   T fadeoutSeconds = T(0.002);
-  size_t upsample = 1;
-  size_t maxiter = 4;
 };
 
 struct UserOption {
@@ -392,7 +393,7 @@ int processMemoryEfficientMode(
   const size_t channels = static_cast<size_t>(snd.info.channels);
   const size_t frames = static_cast<size_t>(snd.info.frames);
 
-  const bool doHighpass = param.highpaddCutoffHz > 0;
+  const bool doHighpass = param.highpassCutoffHz > 0;
   const size_t highpassFrames = doHighpass ? snd.info.samplerate : 0;
   size_t highpassLatency = highpassFrames / 2;
   if (highpassLatency % 2 == 0 && highpassLatency > 0) --highpassLatency;
@@ -416,7 +417,7 @@ int processMemoryEfficientMode(
   // - Lowpass to remove near Nyquist frequency components.
   if (doHighpass) {
     auto highpassFir
-      = getNuttallFir(highpassFrames, snd.info.samplerate, param.highpaddCutoffHz, true);
+      = getNuttallFir(highpassFrames, snd.info.samplerate, param.highpassCutoffHz, true);
     std::vector<OverlapSaveConvolver> highpass(channels);
     for (auto &hp : highpass) {
       hp.init(highpassFir.size(), 0);
@@ -529,7 +530,7 @@ int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double>
   }
 
   // Process limiter.
-  const bool doHighpass = param.highpaddCutoffHz > 0;
+  const bool doHighpass = param.highpassCutoffHz > 0;
   const size_t highpassFrames = doHighpass ? snd.info.samplerate : 0;
   size_t highpassLatency = highpassFrames / 2;
   if (highpassLatency % 2 == 0 && highpassLatency > 0) --highpassLatency;
@@ -553,7 +554,7 @@ int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double>
 
   if (doHighpass) {
     auto highpassFir
-      = getNuttallFir(highpassFrames, snd.info.samplerate, param.highpaddCutoffHz, true);
+      = getNuttallFir(highpassFrames, snd.info.samplerate, param.highpassCutoffHz, true);
     std::vector<OverlapSaveConvolver> highpass(snd.info.channels);
     for (auto &hp : highpass) {
       hp.init(highpassFir.size(), 0);
@@ -580,7 +581,7 @@ int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double>
       auto outputPathStr = opt.outputPath.string();
 
       std::cerr << std::format(
-        "Info: Peak is below threshold. Skipping {}\n", outputPathStr);
+        "Info: Peak is below threshold. Bypassing limiter on {}\n", outputPathStr);
 
       snd.open(opt.inputPath.string());
       snd.load(data);
@@ -732,7 +733,12 @@ int main(int argc, char *argv[])
       "Fade-out time in seconds. Equal power curve (or quarter cosine curve) is used.");
 
   po::variables_map vm;
-  po::store(po::parse_command_line(argc, argv, desc), vm);
+  try {
+    po::store(po::parse_command_line(argc, argv, desc), vm);
+  } catch (...) {
+    std::cerr << boost::current_exception_diagnostic_information() << std::endl;
+    return 1;
+  }
   po::notify(vm);
 
   // Load arguments not directly related to limiter.
@@ -790,7 +796,7 @@ int main(int argc, char *argv[])
   LimiterParameter<double> param;
   param.upsample = vm["upsample"].as<size_t>();
   param.maxiter = vm["maxiter"].as<size_t>();
-  param.highpaddCutoffHz = vm["highpass"].as<double>();
+  param.highpassCutoffHz = vm["highpass"].as<double>();
   param.attackSeconds = vm["attack"].as<double>();
   param.sustainSeconds = vm["sustain"].as<double>();
   param.releaseSeconds = vm["release"].as<double>();
@@ -800,10 +806,6 @@ int main(int argc, char *argv[])
   param.fadeoutSeconds = vm["fadeout"].as<double>();
 
   bool isInvalid = false;
-  if (std::isnan(param.highpaddCutoffHz)) {
-    std::cerr << "Error: Highpass cutoff frequency must not be NaN.\n";
-    isInvalid = true;
-  }
   if (param.upsample <= 0) {
     std::cerr << "Error: Up-sampling ratio must be greater than 0.\n";
     isInvalid = true;
@@ -813,6 +815,10 @@ int main(int argc, char *argv[])
   }
   if (param.maxiter <= 0) {
     std::cerr << "Error: Maximum iteration count must be greater than 0.\n";
+    isInvalid = true;
+  }
+  if (std::isnan(param.highpassCutoffHz)) {
+    std::cerr << "Error: Highpass cutoff frequency must not be NaN.\n";
     isInvalid = true;
   }
   if (!isValidSecond(param.attackSeconds)) {
@@ -849,6 +855,7 @@ int main(int argc, char *argv[])
 Output path : {}
 Mode        : {}
 Trim        : {}
+Highpass    : {} [Hz]
 Attack      : {} [s]
 Sustain     : {} [s]
 Release     : {} [s]
@@ -859,8 +866,9 @@ Up-sampling : {}
 )",
       opt.inputPath.string(), opt.outputPath.string(),
       param.upsample > 1 ? "FFT (precise)" : "FIR Polyphase (non-precise)", opt.trim,
-      param.attackSeconds, param.sustainSeconds, param.releaseSeconds,
-      param.thresholdDecibel, param.gateDecibel, param.link, param.upsample);
+      param.highpassCutoffHz, param.attackSeconds, param.sustainSeconds,
+      param.releaseSeconds, param.thresholdDecibel, param.gateDecibel, param.link,
+      param.upsample);
   }
   if (isInvalid) return EXIT_FAILURE;
 
