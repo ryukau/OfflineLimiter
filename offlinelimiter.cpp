@@ -418,36 +418,30 @@ int processMemoryEfficientMode(
   if (doHighpass) {
     auto highpassFir
       = getNuttallFir(highpassFrames, snd.info.samplerate, param.highpassCutoffHz, true);
-    std::vector<OverlapSaveConvolver> highpass(channels);
-    for (auto &hp : highpass) {
-      hp.init(highpassFir.size(), 0);
-      hp.setFir(&highpassFir[0], 0, highpassFir.size());
-      hp.reset();
-    }
-    for (size_t frm = 0; frm < bufferSize; ++frm) {
-      size_t index = channels * frm;
-      for (size_t ch = 0; ch < channels; ++ch) {
-        data[index + ch] = highpass[ch].process(data[index + ch]);
+    OverlapSaveConvolver highpass;
+    highpass.init(highpassFir.size(), 0);
+    highpass.setFir(&highpassFir[0], 0, highpassFir.size());
+    for (size_t ch = 0; ch < channels; ++ch) {
+      highpass.reset();
+      for (size_t frame = 0; frame < bufferSize; ++frame) {
+        size_t index = channels * frame;
+        data[index + ch] = highpass.process(data[index + ch]);
       }
     }
   }
 
-  std::vector<OverlapSaveConvolver> lowpass(channels);
-  for (auto &lp : lowpass) {
-    lp.init(HeCoef::fir.size(), 0);
-    lp.setFir(&HeCoef::fir[0], 0, HeCoef::fir.size());
-    lp.reset();
-  }
-  for (size_t frm = 0; frm < bufferSize; ++frm) {
-    size_t index = channels * frm;
-    for (size_t ch = 0; ch < channels; ++ch) {
-      data[index + ch] = lowpass[ch].process(data[index + ch]);
+  NaiveConvolver<double, HeCoef> lowpass;
+  for (size_t ch = 0; ch < channels; ++ch) {
+    lowpass.reset();
+    for (size_t frm = 0; frm < bufferSize; ++frm) {
+      size_t index = channels * frm;
+      data[index + ch] = lowpass.process(data[index + ch]);
     }
   }
 
   // Apply limiter.
-  std::vector<FirUpSampler<double, UpCoef>> upSampler(channels);
-  std::vector<FirDownSampler<double, DownCoef>> downSampler(channels);
+  std::vector<FirUpSamplerNaive<double, UpCoef>> upSampler(channels);
+  std::vector<FirDownSamplerNaive<double, DownCoef>> downSampler(channels);
 
   std::vector<Limiter<double>> limiters(channels);
   const double upRate = static_cast<double>(UpCoef::upfold * snd.info.samplerate);
@@ -505,12 +499,11 @@ int processMemoryEfficientMode(
   // Even when `--trim` is not specified, silence introduced by FIR group delay is
   // trimmed.
   //
-  // `OverlapSaveConvolver` output is 1 sample earlier than `scipy.signal.convolve`. This
-  // is the reason of negative constants (-3 and -1) on `firLatency`.
+  // `*Convolver` output is 1 sample earlier than `scipy.signal.convolve`. This is the
+  // reason of negative constants (`highpassLatency - 1`) on `firLatency`.
   //
-  sf_count_t overlapAddLatency
-    = HeCoef::fir.size() + UpCoef::bufferSize + DownCoef::bufferSize + highpassFrames;
-  sf_count_t firLatency = HeCoef::delay + UpCoef::intDelay + DownCoef::intDelay - 3;
+  sf_count_t overlapAddLatency = highpassFrames;
+  sf_count_t firLatency = HeCoef::delay + UpCoef::intDelay + DownCoef::intDelay;
   if (doHighpass) firLatency += highpassLatency - 1;
   sf_count_t totalLatency = limiterLatency + overlapAddLatency + firLatency;
   sf_count_t offset = opt.trim ? totalLatency : overlapAddLatency;
@@ -555,15 +548,13 @@ int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double>
   if (doHighpass) {
     auto highpassFir
       = getNuttallFir(highpassFrames, snd.info.samplerate, param.highpassCutoffHz, true);
-    std::vector<OverlapSaveConvolver> highpass(snd.info.channels);
-    for (auto &hp : highpass) {
-      hp.init(highpassFir.size(), 0);
-      hp.setFir(&highpassFir[0], 0, highpassFir.size());
-      hp.reset();
-    }
+    OverlapSaveConvolver highpass;
+    highpass.init(highpassFir.size(), 0);
+    highpass.setFir(&highpassFir[0], 0, highpassFir.size());
     for (size_t ch = 0; ch < snd.info.channels; ++ch) {
-      for (size_t frm = 0; frm < baseSize; ++frm) {
-        data[ch].buf[frm] = highpass[ch].process(data[ch].buf[frm]);
+      highpass.reset();
+      for (size_t frame = 0; frame < baseSize; ++frame) {
+        data[ch].buf[frame] = highpass.process(data[ch].buf[frame]);
       }
     }
   }
@@ -618,9 +609,7 @@ int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double>
     if (opt.verbose) std::cout << "### Output Peaks\n";
     auto processedPeak = getPeakAmplitude(data, baseSize, opt.verbose);
 
-    // `65535 / 65536 == (2^16 - 1) / 2^16` is a number slightly below dynamic range.
-    // Setting the peak exactly at 1.0 may increases the risk of true-peak clipping.
-    if (processedPeak <= std::max(65535.0 / 65536.0, thresholdAmp)) break;
+    if (processedPeak <= thresholdAmp) break;
     if (iteration == param.maxiter - 1) {
       std::cerr << "Warning: Limiting still failed at maximum iteration count.\n";
     }
@@ -680,9 +669,9 @@ int main(int argc, char *argv[])
       "--trim has no effect when --upsample is set to greater than 1. When specified, "
       "input frame count and output frame count become the same, by trimming artifacts "
       "introduced by multirate processing. When not specified, output signal becomes "
-      "longer than input signal. Additional frame count is "
-      "(2560 + attack * samplerate) at front, and 1286 at back. Theoretically, trimmed "
-      "signal is no longer true-peak limited.")
+      "longer than input signal. Additional frame count is (158 + attack * samplerate) "
+      "at front, and 290 at back. Theoretically, trimmed signal is no longer true-peak "
+      "limited.")
     .
     operator()(
       "memory,m", po::value<double>()->default_value(1.0),
@@ -811,7 +800,7 @@ int main(int argc, char *argv[])
     isInvalid = true;
   }
   if (param.upsample > 1 && opt.trim) {
-    std::cerr << "Warning: --trim has no effect when --upsample is greater than 1.\n";
+    std::cerr << "Warning: --trim do nothing when --upsample is greater than 1.\n";
   }
   if (param.maxiter <= 0) {
     std::cerr << "Error: Maximum iteration count must be greater than 0.\n";

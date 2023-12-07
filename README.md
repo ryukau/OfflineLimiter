@@ -1,14 +1,14 @@
 # Offline Limiter
-Offline limiter is an almost true peak limiter. "Almost" here means that accuracy depends on up-sampling ratio.
+Offline Limiter is an almost true-peak limiter. "Almost" here means that accuracy depends on up-sampling ratio.
 
 2 different multirate technique is used. One is FIR polyphase, and other is using FFT. Default is FIR polyphase because FFT up-sampling requires large amount of memory.
 
-It's too heavy. [I think we're going to have to take this... *offline*.](https://youtu.be/1RAMRukKqQg?t=25)
+It runs offline because it's too heavy.
 
 ## Known Bug
-When input signal contains sudden amplitude change, and  FIR polyphase up-sampling is used, limiting may fail as output exceeds 0 dB. Mitigation is to apply limiter again, or use FFT up-sampling by setting 2 or greater number to `--upsample`.
+When input signal contains sudden amplitude change, and FIR polyphase up-sampling is used, limiting may fail as output exceeds 0 dB. Mitigation is to apply limiter again, or use FFT up-sampling by setting 2 or greater number to `--upsample`.
 
-Possible reason is that, on up-sampled signal, limiter produces frequency components higher than source sampling rate. However, down-sampler trancates them. This truncation changes the peak in down-sampled signal.
+Possible reason is distortion introduced in limiting process. On up-sampled signal, limiter produces frequency components higher than source Nyquist frequency. However, down-sampler truncates them. This truncation changes the peak in down-sampled signal.
 
 ---
 
@@ -60,7 +60,7 @@ target_compile_options(${PROJECT_NAME} PRIVATE
 )
 ```
 
-might do the trick with g++ and clang++.
+might do the trick for g++ and clang++.
 
 After modification, following command might work. On macOS, it might be better to add `-GXcode` option at line 🤔.
 
@@ -77,7 +77,7 @@ Detail of limiter parameter is written in BasicLimiter manual linked below. The 
 
 - [BasicLimiter User Manual](https://ryukau.github.io/VSTPlugins/manual/BasicLimiter/BasicLimiter_en.html)
 
-Below is list of command line options.
+Below is the list of command line options.
 
 ```
   -h [ --help ]                         Show this message.
@@ -105,9 +105,9 @@ Below is list of command line options.
                                         artifacts introduced by multirate
                                         processing. When not specified, output
                                         signal becomes longer than input
-                                        signal. Additional frame count is (2560
+                                        signal. Additional frame count is (158
                                         + attack * samplerate) at front, and
-                                        1286 at back. Theoretically, trimmed
+                                        290 at back. Theoretically, trimmed
                                         signal is no longer true-peak limited.
   -m [ --memory ] arg (=1)              Memory warning threshold in GiB. When
                                         estimated memory allocation exceeds
@@ -164,8 +164,8 @@ Details are written in following link.
 
 - [リミッタの実装](https://ryukau.github.io/filter_notes/limiter/limiter.html)
 
-## True Peak Reconstruction in `--precise` Mode
-True peak here means that absolute maximum of sinc interpolated signal.
+## True-Peak Reconstruction in `--precise` Mode
+True-peak here means that absolute maximum of sinc interpolated signal.
 
 Sinc interpolation is defined as below.
 
@@ -181,15 +181,15 @@ $$
 - $n$ is discrete time in samples.
 - $t$ is continuous time in samples. To get time in seconds, divide this value with sampling rate.
 
-And I define true peak as following.
+And I define true-peak as following.
 
 $$
 \mathtt{truepeak} = \max(|x(t)|), \enspace \text{for all} \enspace t \enspace \text{in} \enspace \mathbb{R}.
 $$
 
-As you can see, sinc interpolation requires infinite length convolution. It can't be computed in real-time or in real-life. However, we can approximate true peak by using up-sampling with discrete fourier transform (DFT). I found this from experiment, but I guess there are some books that explain the theory behind it. The idea is that ideal lowpass equation matches to DFT equation. Also the use of DFT is the reason this limiter runs offline, not in real-time. It has to know all the input beforehand.
+As you can see, sinc interpolation requires infinite length convolution. It can't be computed in real-time or in real-life. However, we can approximate true-peak by using up-sampling with discrete fourier transform (DFT). I found this from experiment, but I guess there are some books that explain the theory behind it (See reference below). The idea is that ideal lowpass equation matches to DFT equation. Also the use of DFT is the reason this limiter runs offline, not in real-time. It has to know all the input beforehand.
 
-The accuracy of true peak reconstruction depends on how fine grained the up-sampling is. I'm not good at math, but it might be written as following.
+The accuracy of true-peak reconstruction depends on how fine grained the up-sampling is. I'm not good at math, but it might be written as following.
 
 $$
 \mathtt{truepeak} \approx \max(|x(\tau)|)
@@ -205,20 +205,25 @@ $$
 - $N$ is number of input samples.
 - $L$ is up-sampling ratio.
 
-The idea is that if we increase $L$ to $+\infty$, then $\tau$ becomes almost same as $t$. That's what I'm calling almost true peak. Note that this is not math proof, but conveying idea using math equation. I'm not sure if $t$ and $\tau$ become equal in case of $L \to +\infty$. Also the above approximation is assuming that $x(t)$ is $0$ where $t < 0$, or $t > N-1$.
+The idea is that if we increase $L$ to $+\infty$, then $\tau$ becomes almost same as $t$. That's what I'm calling almost true-peak. Note that this is not math proof, but conveying idea using math equation. I'm not sure if $t$ and $\tau$ become equal in case of $L \to +\infty$. Also the above approximation is assuming that $x(t)$ is $0$ where $t < 0$, or $t > N-1$.
+
+### Reference
+- [Spectral Interpolation](https://ccrma.stanford.edu/~jos/sasp/Spectral_Interpolation.html)
+- [Dirichlet kernel - Wikipedia](https://en.wikipedia.org/wiki/Dirichlet_kernel)
+- [Dirac comb - Wikipedia](https://en.wikipedia.org/wiki/Dirac_comb)
 
 ## FIR Polyphase Spec.
 FIR polyphase is used when `--precise` option is not set. This is default because of the better memory efficiency.
 
 Specification:
 
-- 1023 taps high elimination lowpass.
-- 1023 taps * 8 phase up-sampler.
-- 511 taps * 8 phase down-sampler.
+- 64 taps high elimination lowpass.
+- 64 taps * 8 phase up-sampler.
+- 64 taps * 8 phase down-sampler.
 
-Cutoff frequency is 23500 Hz at 48000 Hz sampling rate for all 3 filters above. Or 0.489 in normalized frequency (radian/π).
+Because of the high elimination lowpass, the amplitude of frequency components decrease as it approaches to Nyquist frequency.
 
-When `--trim` option is not specified, `2560 + attack * samplerate` frames are added to the front, and `1286` frames are added to the back of input signal. See usage section for more details.
+When `--trim` option is not specified, `158 + attack * samplerate` frames are added to the front, and `290` frames are added to the back of input signal. See usage section for more details.
 
 Comments in the codes in `fir` directory provides Python3 code used to design filter.
 

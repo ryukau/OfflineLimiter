@@ -235,3 +235,64 @@ getNuttallFir(size_t nTap, double sampleRate, double cutoffHz, bool isHighpass)
 
   return coefficient;
 }
+
+template<typename Sample, typename Fir> class NaiveConvolver {
+private:
+  std::array<Sample, Fir::fir.size()> buf{};
+
+public:
+  void reset() { buf.fill(Sample(0)); }
+
+  Sample process(Sample input)
+  {
+    std::rotate(buf.rbegin(), buf.rbegin() + 1, buf.rend());
+    buf[0] = input;
+
+    Sample output = 0;
+    for (size_t n = 0; n < Fir::fir.size(); ++n) output += buf[n] * Fir::fir[n];
+    return output;
+  }
+};
+
+template<typename Sample, typename FractionalDelayFIR> class FirUpSamplerNaive {
+  std::array<Sample, FractionalDelayFIR::bufferSize> buf{};
+
+public:
+  std::array<Sample, FractionalDelayFIR::upfold> output;
+
+  void reset() { buf.fill(Sample(0)); }
+
+  void process(Sample input)
+  {
+    std::rotate(buf.rbegin(), buf.rbegin() + 1, buf.rend());
+    buf[0] = input;
+
+    std::fill(output.begin(), output.end(), Sample(0));
+    for (size_t i = 0; i < FractionalDelayFIR::coefficient.size(); ++i) {
+      auto &&phase = FractionalDelayFIR::coefficient[i];
+      for (size_t n = 0; n < phase.size(); ++n) output[i] += buf[n] * phase[n];
+    }
+  }
+};
+
+template<typename Sample, typename Fir> class FirDownSamplerNaive {
+  std::array<std::array<Sample, Fir::bufferSize>, Fir::upfold> buf{{}};
+
+public:
+  void reset() { buf.fill({}); }
+
+  Sample process(const std::array<Sample, Fir::upfold> &input)
+  {
+    for (size_t i = 0; i < Fir::upfold; ++i) {
+      std::rotate(buf[i].rbegin(), buf[i].rbegin() + 1, buf[i].rend());
+      buf[i][0] = input[i];
+    }
+
+    Sample output = 0;
+    for (size_t i = 0; i < Fir::coefficient.size(); ++i) {
+      auto &&phase = Fir::coefficient[i];
+      for (size_t n = 0; n < phase.size(); ++n) output += buf[i][n] * phase[n];
+    }
+    return output;
+  }
+};
