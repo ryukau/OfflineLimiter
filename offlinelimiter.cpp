@@ -1,4 +1,4 @@
-// Copyright (C) 2022  Takamitsu Endo
+// Copyright (C) 2022-2023  Takamitsu Endo
 //
 // This program is free software; you can redistribute it and/or
 // modify it under the terms of the GNU General Public License
@@ -18,10 +18,15 @@
 
 TODO:
 - Implement --maxiter to `processMemoryEfficientMode`. Latency must be considered.
+- Add metering for normalization other than 10-second moving average.
 - Maybe add better progress text.
 - Maybe add output file format option.
 - Maybe apply gate after limiting.
 - Maybe add fade-in.
+
+Note:
+The complexity of the code comes from the incompatible audio data structure between memory
+efficient mode and precise mode. `std::views` seems useful to clean up the mess.
 
 */
 
@@ -265,6 +270,7 @@ template<typename T> struct LimiterParameter {
   T gateDecibel = -std::numeric_limits<T>::infinity();
   T link = T(0.5);
   T fadeoutSeconds = T(0.002);
+  T normalizeTargetDecibel = T(-10);
 };
 
 struct UserOption {
@@ -351,6 +357,73 @@ double getPeakAmplitude(
   return maxPeak;
 }
 
+void normalizeAmplitude(
+  std::vector<FFTW3Buffer> &data,
+  size_t length,
+  const int samplerate,
+  const double normalizeTargetAmp,
+  bool verbose)
+{
+  for (size_t ch = 0; ch < data.size(); ++ch) length = std::min(length, data[ch].bufSize);
+
+  double peakSquaredAverage = 0;
+
+  MovingAverageFilter<double> meter;
+  meter.setFrames(10 * samplerate);
+  for (size_t ch = 0; ch < data.size(); ++ch) {
+    meter.reset();
+    for (size_t idx = 0; idx < length; ++idx) {
+      auto value = data[ch].buf[idx];
+      peakSquaredAverage = std::max(peakSquaredAverage, meter.process(value * value));
+    }
+  }
+
+  // Avoid 0 division.
+  if (peakSquaredAverage < std::numeric_limits<double>::epsilon()) {
+    if (verbose) {
+      std::cout << "Bypassing normalization due to low peak amplitude.\n";
+    }
+    return;
+  }
+
+  const double gain = normalizeTargetAmp / std::sqrt(peakSquaredAverage);
+  for (size_t ch = 0; ch < data.size(); ++ch) {
+    for (size_t idx = 0; idx < length; ++idx) data[ch].buf[idx] *= gain;
+  }
+}
+
+void normalizeAmplitude(
+  std::vector<double> &data,
+  const size_t channels,
+  const size_t frames,
+  const int samplerate,
+  const double normalizeTargetAmp,
+  bool verbose)
+{
+  double peakSquaredAverage = 0;
+
+  MovingAverageFilter<double> meter;
+  meter.setFrames(10 * samplerate);
+  for (size_t ch = 0; ch < channels; ++ch) {
+    meter.reset();
+    for (size_t idx = 0; idx < frames; ++idx) {
+      auto value = data[channels * idx + ch];
+      peakSquaredAverage = std::max(peakSquaredAverage, meter.process(value * value));
+    }
+  }
+
+  // Avoid 0 division.
+  if (peakSquaredAverage < std::numeric_limits<double>::epsilon()) {
+    if (verbose) {
+      std::cout << "Bypassing normalization due to low peak amplitude.\n";
+    }
+    return;
+  }
+
+  const double gain = normalizeTargetAmp / std::sqrt(peakSquaredAverage);
+  for (size_t idx = 0; idx < channels * frames; ++idx) data[idx] *= gain;
+}
+
 int promptMemoryUsage(double estimatedMemoryUsage, UserOption &opt)
 {
   std::cout << std::format(
@@ -409,8 +482,21 @@ int processMemoryEfficientMode(
   snd.load(data, margin);
   snd.close();
 
-  if (opt.verbose) std::cout << "### Input Peaks\n";
-  getPeakAmplitude(data, channels, frames, opt.verbose);
+  if (std::isfinite(param.normalizeTargetDecibel)) {
+    if (opt.verbose) std::cout << "### Normalization\n";
+    normalizeAmplitude(
+      data, channels, frames, snd.info.samplerate,
+      decibelToAmp(param.normalizeTargetDecibel), opt.verbose);
+  } else {
+    if (opt.verbose) {
+      std::cout << "Bypassing normalization due to non-finite target amplitude.\n";
+    }
+  }
+
+  if (opt.verbose) {
+    std::cout << "### Input Peaks\n";
+    getPeakAmplitude(data, channels, frames, opt.verbose);
+  }
 
   // Apply filters.
   // - Highpass to remove direct current.
@@ -492,8 +578,10 @@ int processMemoryEfficientMode(
     for (size_t ch = 0; ch < channels; ++ch) data[index + ch] *= gain;
   }
 
-  if (opt.verbose) std::cout << "### Output Peaks\n";
-  getPeakAmplitude(data, channels, bufferSize, opt.verbose);
+  if (opt.verbose) {
+    std::cout << "### Output Peaks\n";
+    getPeakAmplitude(data, channels, bufferSize, opt.verbose);
+  }
 
   //
   // Even when `--trim` is not specified, silence introduced by FIR group delay is
@@ -542,8 +630,22 @@ int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double>
 
   snd.load(data);
   snd.close();
-  if (opt.verbose) std::cout << "### Input Peaks\n";
-  getPeakAmplitude(data, static_cast<size_t>(snd.info.frames), opt.verbose);
+
+  if (std::isfinite(param.normalizeTargetDecibel)) {
+    if (opt.verbose) std::cout << "### Normalization\n";
+    normalizeAmplitude(
+      data, static_cast<size_t>(snd.info.frames), snd.info.samplerate,
+      decibelToAmp(param.normalizeTargetDecibel), opt.verbose);
+  } else {
+    if (opt.verbose) {
+      std::cout << "Bypassing normalization due to non-finite target amplitude.\n";
+    }
+  }
+
+  if (opt.verbose) {
+    std::cout << "### Input Peaks\n";
+    getPeakAmplitude(data, static_cast<size_t>(snd.info.frames), opt.verbose);
+  }
 
   if (doHighpass) {
     auto highpassFir
@@ -574,8 +676,7 @@ int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double>
       std::cerr << std::format(
         "Info: Peak is below threshold. Bypassing limiter on {}\n", outputPathStr);
 
-      snd.open(opt.inputPath.string());
-      snd.load(data);
+      for (auto &dt : data) dt.downSample(param.upsample, baseSize, 0);
       return writeWave(outputPathStr, data, snd.info.frames, writeOffset, snd.info);
     }
 
@@ -710,7 +811,7 @@ int main(int argc, char *argv[])
     operator()(
       "gate,g",
       po::value<double>()->default_value(-std::numeric_limits<double>::infinity()),
-      "Gate threshold in decibel.")
+      "Gate threshold in decibel. Setting the value to -inf disables the gate.")
     .
     operator()(
       "link,l", po::value<double>()->default_value(0.5),
@@ -719,7 +820,15 @@ int main(int argc, char *argv[])
     .
     operator()(
       "fadeout,f", po::value<double>()->default_value(0.001),
-      "Fade-out time in seconds. Equal power curve (or quarter cosine curve) is used.");
+      "Fade-out time in seconds. Equal power curve (or quarter cosine curve) is used.")
+    .
+    operator()(
+      "normalize,n",
+      po::value<double>()->default_value(-std::numeric_limits<double>::infinity()),
+      "Target amplitude of normalization in decibel. Setting the value to +inf, -inf, or "
+      "other non-finite value bypasses normalization. The metering is 10-second moving "
+      "average. In other words, this is not sample-peak normalization, and more close to "
+      "RMS normalization.");
 
   po::variables_map vm;
   try {
@@ -793,6 +902,7 @@ int main(int argc, char *argv[])
   param.gateDecibel = vm["gate"].as<double>();
   param.link = vm["link"].as<double>();
   param.fadeoutSeconds = vm["fadeout"].as<double>();
+  param.normalizeTargetDecibel = vm["normalize"].as<double>();
 
   bool isInvalid = false;
   if (param.upsample <= 0) {
@@ -838,26 +948,32 @@ int main(int argc, char *argv[])
     std::cerr << "Error: Fade-out time must be positive value in seconds.\n";
     isInvalid = true;
   }
+  if (std::isnan(param.normalizeTargetDecibel)) {
+    std::cerr << "Error: Target amplitude of normalization must not be NaN.\n";
+    isInvalid = true;
+  }
   if (isInvalid || opt.verbose) {
     std::cout << std::format(
       R"(Input path  : {}
-Output path : {}
-Mode        : {}
-Trim        : {}
-Highpass    : {} [Hz]
-Attack      : {} [s]
-Sustain     : {} [s]
-Release     : {} [s]
-Threshold   : {} [dB]
-Gate        : {} [dB]
-Link        : {}
-Up-sampling : {}
+Output path  : {}
+Mode         : {}
+Trim         : {}
+Highpass     : {} [Hz]
+Attack       : {} [s]
+Sustain      : {} [s]
+Release      : {} [s]
+Threshold    : {} [dB]
+Gate         : {} [dB]
+Link         : {}
+Fade-out     : {} [s]
+Normalize to : {} [dB] (10s moving average)
+Up-sampling  : {}
 )",
       opt.inputPath.string(), opt.outputPath.string(),
       param.upsample > 1 ? "FFT (precise)" : "FIR Polyphase (non-precise)", opt.trim,
       param.highpassCutoffHz, param.attackSeconds, param.sustainSeconds,
       param.releaseSeconds, param.thresholdDecibel, param.gateDecibel, param.link,
-      param.upsample);
+      param.fadeoutSeconds, param.normalizeTargetDecibel, param.upsample);
   }
   if (isInvalid) return EXIT_FAILURE;
 

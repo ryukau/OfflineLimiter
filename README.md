@@ -135,13 +135,22 @@ Below is the list of command line options.
   -r [ --release ] arg (=0)             Release time in seconds.
   -t [ --threshold ] arg (=-0.10000000000000001)
                                         Limiter threshold in decibel.
-  -g [ --gate ] arg (=-inf)             Gate threshold in decibel.
+  -g [ --gate ] arg (=-inf)             Gate threshold in decibel. Setting the
+                                        value to -inf disables the gate.
   -l [ --link ] arg (=0.5)              Stereo or multi-channel link amount in
                                         [0.0, 1.0]. 0.0 is no link, and 1.0 is
                                         full link.
   -f [ --fadeout ] arg (=0.001)         Fade-out time in seconds. Equal power
                                         curve (or quarter cosine curve) is
                                         used.
+  -n [ --normalize ] arg (=-inf)        Target amplitude of normalization in
+                                        decibel. Setting the value to +inf,
+                                        -inf, or other non-finite value
+                                        bypasses normalization. The metering is
+                                        10-second moving average. In other
+                                        words, this is not sample-peak
+                                        normalization, and more close to RMS
+                                        normalization.
 ```
 
 Below is an example invocation in PowerShell.

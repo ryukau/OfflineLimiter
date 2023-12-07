@@ -215,6 +215,44 @@ template<typename Sample> struct PeakHold {
 };
 
 /**
+Floating point addition with rounding towards 0 for positive number.
+It must be that `lhs >= 0` and `rhs >= 0`.
+
+Assuming IEEE 754. It was only tested where
+`std::numeric_limits<float>::round_style == std::round_to_nearest`. On the platform
+using other type of floating point rounding or representation, it may not work, or may
+be unnecessary. Negative number input is not tested.
+
+Following explanation uses 4 bit significand. Numbers are binary. Consider addition of
+significand like following:
+
+```
+  1000
++ 0011 11 // last 11 will be rounded.
+---------
+  1???
+```
+
+There are 2 possible answer depending on rounding mode: 1100 or 1011.
+
+This `addToMovingSum()` method outputs 1011 in cases like above, to prevent smoothed
+output exceeds decimal +1.0.
+
+If `std::numeric_limits<float>::round_style == std::round_to_nearest`, then the number
+will be rounded towards nearest even number. In this case, the answer on above case
+becomes 1100.
+*/
+template<typename Sample> inline Sample addToMovingSum(Sample lhs, Sample rhs)
+{
+  if (lhs < rhs) std::swap(lhs, rhs);
+  int expL;
+  std::frexp(lhs, &expL);
+  auto cut = std::ldexp(float(1), expL - std::numeric_limits<Sample>::digits);
+  auto rounded = rhs - std::fmod(rhs, cut);
+  return lhs + rounded;
+}
+
+/**
 Double moving average filter.
 
 Output of `process()` is equivalent to the following Python 3 code. `size` is the value
@@ -267,59 +305,54 @@ public:
     delay2.setFrames(half);
   }
 
-  /**
-  Floating point addition with rounding towards 0 for positive number.
-  It must be that `lhs >= 0` and `rhs >= 0`.
-
-  Assuming IEEE 754. It was only tested where
-  `std::numeric_limits<float>::round_style == std::round_to_nearest`. On the platform
-  using other type of floating point rounding or representation, it may not work, or may
-  be unnecessary. Negative number input is not tested.
-
-  Following explanation uses 4 bit significand. Numbers are binary. Consider addition of
-  significand like following:
-
-  ```
-    1000
-  + 0011 11 // last 11 will be rounded.
-  ---------
-    1???
-  ```
-
-  There are 2 possible answer depending on rounding mode: 1100 or 1011.
-
-  This `add()` method outputs 1011 in cases like above, to prevent smoothed output
-  exceeds decimal +1.0.
-
-  If `std::numeric_limits<float>::round_style == std::round_to_nearest`, then the number
-  will be rounded towards nearest even number. In this case, the answer on above case
-  becomes 1100.
-  */
-  inline Sample add(Sample lhs, Sample rhs)
-  {
-    if (lhs < rhs) std::swap(lhs, rhs);
-    int expL;
-    std::frexp(lhs, &expL);
-    auto cut = std::ldexp(float(1), expL - std::numeric_limits<Sample>::digits);
-    auto rounded = rhs - std::fmod(rhs, cut);
-    return lhs + rounded;
-  }
-
   Sample process(Sample input)
   {
     input *= denom;
 
-    sum1 = add(sum1, input);
+    sum1 = addToMovingSum(sum1, input);
     Sample d1 = delay1.process(input);
     sum1 = std::max(Sample(0), sum1 - d1);
 
-    sum2 = add(sum2, sum1);
+    sum2 = addToMovingSum(sum2, sum1);
     Sample d2 = delay2.process(sum1);
     sum2 = std::max(Sample(0), sum2 - d2);
 
     auto output = buf;
     buf = sum2;
     return output;
+  }
+};
+
+// Used for normalization.
+template<typename Sample> class MovingAverageFilter {
+private:
+  Sample denom = Sample(1);
+  Sample sum = 0;
+  IntDelay<Sample> delay;
+
+public:
+  void resize(size_t size) { delay.resize(size); }
+
+  void reset()
+  {
+    sum = 0;
+    delay.reset();
+  }
+
+  void setFrames(size_t frames)
+  {
+    denom = 1 / Sample(frames);
+    resize(frames);
+    delay.setFrames(frames);
+  }
+
+  Sample process(Sample input)
+  {
+    input *= denom;
+    sum = addToMovingSum(sum, input);
+    Sample d1 = delay.process(input);
+    sum = std::max(Sample(0), sum - d1);
+    return sum;
   }
 };
 
