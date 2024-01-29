@@ -37,7 +37,70 @@ cd OfflineLimiter
 
 `offlinelimiter.exe` will be built into `build/Release`.
 
-### Non-Windows
+### macOS
+I didn't commit the change in this instruction because it's very ad-hoc. Issues are that:
+
+- Apple clang comes with XCode doesn't provide `std::format`.
+- Homebrew doesn't provide some cmake files to link properly. ([Link to a related issue](https://github.com/FFTW/fftw3/issues/130))
+
+Install [Homebrew](https://brew.sh). Then, install following packages from Homebrew.
+
+```zsh
+brew install --cask cmake # cmake-gui is convenient to have.
+brew install boost libsndfile llvm
+```
+
+Install [Xcode](https://developer.apple.com/xcode/) and its clang compiler. See link below for how.
+
+- [terminal - How to Install Clang specifically - Ask Different](https://apple.stackexchange.com/questions/360009/how-to-install-clang-specifically)
+
+Next, download FFTW source code from the link below.
+
+- [FFTW Download Page](http://fftw.org/download.html)
+
+Extract the downloaded FFTW archive and build it with double precision (default).
+
+```zsh
+tar -xf fftw-[version].tar.gz # Replace [version] to the actual version numbers.
+cd fftw-[version]
+cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -GXcode
+cd build # It somehow didn't work without this cd.
+cmake --build . --config Release
+sudo cmake --build . --target install --config Release # Beware the sudo.
+```
+
+Go back to this `OfflineLimiter` repository.
+
+```zsh
+cd /path/to/OfflineLimiter # Replace `/path/to`.
+```
+
+Modify `CMakeLists.txt`. First, set `CMAKE_C_COMPILER` and `CMAKE_CXX_COMPILER` as following. It's probably better to put these lines before `project`.
+
+```cmake
+set(CMAKE_C_COMPILER /opt/homebrew/opt/llvm/bin/clang)
+set(CMAKE_CXX_COMPILER /opt/homebrew/opt/llvm/bin/clang++)
+```
+
+Then change `target_compile_options` as following.
+
+```cmake
+target_compile_options(${PROJECT_NAME} PRIVATE
+  -Wall
+  -O3
+  -ffast-math
+)
+```
+
+Finally, it's possible to build.
+
+```zsh
+cd OfflineLimiter
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config release
+```
+
+### Other OS
 Some modification to top level `CMakeLists.txt` is required.
 
 Changing following part:
@@ -62,11 +125,11 @@ target_compile_options(${PROJECT_NAME} PRIVATE
 
 might do the trick for g++ and clang++.
 
-After modification, following command might work. On macOS, it might be better to add `-GXcode` option at line 🤔.
+After modification, following command might work.
 
 ```bash
 cd OfflineLimiter
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release # 🤔
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config release
 ```
 
