@@ -954,7 +954,7 @@ int main(int argc, char *argv[])
   }
   if (isInvalid || opt.verbose) {
     std::cout << std::format(
-      R"(Input path  : {}
+      R"(Input path   : {}
 Output path  : {}
 Mode         : {}
 Trim         : {}
@@ -983,9 +983,9 @@ Up-sampling  : {}
 
   if (opt.verbose) {
     std::cout << std::format(
-      R"(Sample Rate : {} [Hz]
-Channel     : {}
-Frame       : {}
+      R"(Sample Rate  : {} [Hz]
+Channel      : {}
+Frame        : {}
 )",
       snd.info.samplerate, snd.info.channels, snd.info.frames);
   }
