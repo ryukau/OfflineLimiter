@@ -6,7 +6,7 @@ import subprocess
 
 
 def testImpulse(filename, samplerate):
-    sig = np.zeros(10000)
+    sig = np.zeros(samplerate)
     sig[0] = 1
     sig[-1] = 1
     soundfile.write(filename, sig, samplerate)
@@ -17,6 +17,21 @@ def generateNoise(filename, samplerate, seed=98276521):
     rng = np.random.default_rng(seed)
     sig = 2.0 * rng.binomial(1, 0.5, samplerate) - 1
     soundfile.write(filename, sig, samplerate)
+    return sig
+
+
+def generateStepSignal(filename, samplerate):
+    sig = np.ones(samplerate)
+    soundfile.write(filename, sig, samplerate)
+    return sig
+
+
+def generateNyquistSignal(filename, samplerate):
+    sig = np.empty(samplerate)
+    sig[0::2] = 1
+    sig[1::2] = -1
+    soundfile.write(filename, sig, samplerate)
+    return sig
 
 
 def testPolyPhaseLatency(source_filename, plot=False):
@@ -120,6 +135,10 @@ def testSkipLimiting(samplerate, plot=False):
             source_filename,
             "--output",
             output_filename,
+            "--threshold",
+            "-0.1",
+            "--normalize",
+            "-10",
         ]
     )
 
@@ -140,11 +159,21 @@ def testSkipLimiting(samplerate, plot=False):
 if __name__ == "__main__":
     samplerate = 48000
 
-    testPolyPhaseLatency("impulse.wav", True)
+    # testPolyPhaseLatency("impulse.wav", True)
 
-    # noise_filename = "binomial_noise.wav"
-    # generateNoise(noise_filename, samplerate)
-    # testPolyPhaseLimiting(noise_filename)
-    # testPreciseLimiting(noise_filename)
+    noise_filename = "binomial_noise.wav"
+    generateNoise(noise_filename, samplerate)
+    testPolyPhaseLimiting(noise_filename)
+    testPreciseLimiting(noise_filename)
+
+    step_filename = "step.wav"
+    generateStepSignal(step_filename, samplerate)
+    testPolyPhaseLimiting(step_filename)
+    testPreciseLimiting(step_filename)
+
+    nyquist_filename = "nyquist.wav"
+    generateNyquistSignal(nyquist_filename, samplerate)
+    testPolyPhaseLimiting(nyquist_filename)
+    testPreciseLimiting(nyquist_filename)
 
     # testSkipLimiting(samplerate)

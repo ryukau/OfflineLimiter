@@ -59,6 +59,9 @@ struct FFTW3Buffer {
   size_t bufSize = 0;
   size_t spcSize = 0;
 
+  static constexpr size_t lowpassNumerator = 1023;
+  static constexpr size_t lowpassDenominator = 2048;
+
   double peakAmplitude(size_t length)
   {
     if (length > bufSize) {
@@ -91,6 +94,13 @@ struct FFTW3Buffer {
     fftw_execute(forwardPlan);
     fftw_destroy_plan(forwardPlan);
 
+    // Lowpass.
+    for (size_t idx = frames * lowpassNumerator / lowpassDenominator;
+         idx < frames / 2 + 1; ++idx)
+    {
+      spc[idx] = std::complex<double>{0.0, 0.0};
+    }
+
     auto inversePlan = fftw_plan_dft_c2r_1d(
       int(fold * frames), reinterpret_cast<fftw_complex *>(spc), buf, FFTW_ESTIMATE);
     fftw_execute(inversePlan);
@@ -107,6 +117,13 @@ struct FFTW3Buffer {
       FFTW_ESTIMATE);
     fftw_execute(forwardPlan);
     fftw_destroy_plan(forwardPlan);
+
+    // Lowpass.
+    for (size_t idx = frames * lowpassNumerator / lowpassDenominator;
+         idx < frames / 2 + 1; ++idx)
+    {
+      spc[idx] = std::complex<double>{0.0, 0.0};
+    }
 
     auto inversePlan = fftw_plan_dft_c2r_1d(
       int(frames), reinterpret_cast<fftw_complex *>(spc), buf, FFTW_ESTIMATE);
@@ -653,7 +670,7 @@ int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double>
     OverlapSaveConvolver highpass;
     highpass.init(highpassFir.size(), 0);
     highpass.setFir(&highpassFir[0], 0, highpassFir.size());
-    for (size_t ch = 0; ch < snd.info.channels; ++ch) {
+    for (size_t ch = 0; ch < data.size(); ++ch) {
       highpass.reset();
       for (size_t frame = 0; frame < baseSize; ++frame) {
         data[ch].buf[frame] = highpass.process(data[ch].buf[frame]);
@@ -710,7 +727,7 @@ int processPreciseMode(UserOption &opt, SoundFile &snd, LimiterParameter<double>
     if (opt.verbose) std::cout << "### Output Peaks\n";
     auto processedPeak = getPeakAmplitude(data, baseSize, opt.verbose);
 
-    if (processedPeak <= thresholdAmp) break;
+    if (processedPeak <= double(1)) break;
     if (iteration == param.maxiter - 1) {
       std::cerr << "Warning: Limiting still failed at maximum iteration count.\n";
     }
